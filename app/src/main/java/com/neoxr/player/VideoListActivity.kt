@@ -119,7 +119,7 @@ class VideoListActivity : AppCompatActivity() {
                         // duplicates it (Toasts are separate windows, invisible in
                         // glasses)
                         loading.visibility = View.GONE
-                        empty.text = e.message ?: "Load error"
+                        empty.text = e.message ?: "加载失败"
                         empty.visibility = View.VISIBLE
                     }
                 }
@@ -164,7 +164,7 @@ class VideoListActivity : AppCompatActivity() {
         a.videos = videos
         a.notifyDataSetChanged()
         if (toTop) grid.setSelection(0)
-        browse.text = "${scenes.getOrNull(sceneIdx)?.name ?: "Browse"}  ${videos.size} ▾"
+        browse.text = "${scenes.getOrNull(sceneIdx)?.name ?: "浏览"}  ${videos.size} ▾"
     }
 
     /**
@@ -176,7 +176,7 @@ class VideoListActivity : AppCompatActivity() {
         rows.removeAllViews()
         val all = scenes.flatMap { it.videos }
         if (scenes.size > 1) {
-            header("Sections")
+            header("分组")
             scenes.forEachIndexed { i, s ->
                 row("${s.name} · ${s.videos.size}", sceneIdx == i, radio = true) {
                     sceneIdx = i
@@ -185,8 +185,8 @@ class VideoListActivity : AppCompatActivity() {
                 }
             }
         }
-        header("Sort")
-        listOf("Feed order", "Longest first", "Shortest first", "Title A–Z")
+        header("排序")
+        listOf("默认顺序", "时长从长到短", "时长从短到长", "按标题排序")
             .forEachIndexed { i, label ->
                 row(label, sort == i, radio = true) {
                     sort = i
@@ -194,16 +194,16 @@ class VideoListActivity : AppCompatActivity() {
                     refilter()
                 }
             }
-        header("Filters")
+        header("筛选")
         val available = buildList {
-            add("free" to "Free only")
+            add("free" to "仅看免费")
             if (all.any { it.maxHeight >= 2160 }) add("4k" to "4K+")
             if (all.any { it.maxHeight >= 4320 }) add("8k" to "8K")
             if (all.any { it.angleDeg >= 300 }) add("360" to "360°")
             if (all.any { it.angleDeg in 100..299 }) add("180" to "180°")
-            if (all.any { it.angleDeg == 0 }) add("flat" to "Flat")
-            if (all.any { it.stereo != null && it.stereo != "off" }) add("3d" to "3D")
-            if (all.any { it.stereo == "off" }) add("2d" to "2D")
+            if (all.any { it.angleDeg == 0 }) add("flat" to "平面")
+            if (all.any { it.stereo != null && it.stereo != "off" }) add("3d" to "立体")
+            if (all.any { it.stereo == "off" }) add("2d" to "二维")
         }
         for ((key, label) in available) {
             row(label, key in flags, radio = false) {
@@ -218,7 +218,7 @@ class VideoListActivity : AppCompatActivity() {
         rows.addView(TextView(this).apply {
             this.text = text.uppercase()
             textSize = 8f
-            letterSpacing = 0.14f
+            letterSpacing = 0f
             typeface = android.graphics.Typeface.create("sans-serif-medium", android.graphics.Typeface.NORMAL)
             setTextColor(getColor(R.color.on_surface_variant))
             val p = (18 * resources.displayMetrics.density).toInt()
@@ -282,7 +282,7 @@ class VideoListActivity : AppCompatActivity() {
                 .transform(CenterCrop(), RoundedCorners(corner))
                 .into(thumb)
 
-            // ponytail: listings carry no premium flag, so "Free only" resolves lazily —
+            // ponytail: listings carry no premium flag, so "仅看免费" resolves lazily —
             // one GET per item as it scrolls into view, and locked items drop out of the
             // grid once known. Requests go through a small fixed pool on purpose: a
             // thread-per-item burst looks like an attack to edge/anti-bot layers and

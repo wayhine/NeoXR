@@ -26,7 +26,7 @@ object Glasses {
 
     /**
      * Vendor names XR glasses report through [Display.getName]. Many devices never
-     * expose one (Android substitutes a generic localized "HDMI screen" instead),
+     * expose one (Android substitutes a generic localized "HDMI 屏幕" instead),
      * which is why [find] also falls back to panel shape.
      */
     private val KNOWN = Regex("xreal|nreal|viture|rokid|rayneo|inmo|even ?realities", RegexOption.IGNORE_CASE)
@@ -99,36 +99,29 @@ object Glasses {
 class GlassesOut(
     private val activity: Activity,
     private val glassesDisplay: Display,
-    val wrap: SbsFrameLayout
+    val wrap: SbsFrameLayout,
+    private val onFailure: () -> Unit
 ) {
 
     private val presentation = Presentation(activity, glassesDisplay)
 
-    /** True when the display refused the presentation — the caller should stay on the phone. */
-    var failed = false
-        private set
-
     /**
      * Label for the display in use, shown on the remote so a wrong auto-pick is
      * visible. Vendor names only appear on some devices — elsewhere Android reports
-     * a generic, localized "HDMI screen", so the resolution is the useful part.
+     * a generic, localized "HDMI 屏幕", so the resolution is the useful part.
      */
     val displayName: String
         get() {
             val name = glassesDisplay.name.orEmpty()
             if (Glasses.isKnownGlasses(name)) return name
             val m = glassesDisplay.mode
-            return if (m != null) "GLASSES · ${m.physicalWidth}×${m.physicalHeight}"
-            else "GLASSES CONNECTED"
+            return if (m != null) "眼镜 · ${m.physicalWidth}×${m.physicalHeight}"
+            else "眼镜已连接"
         }
 
-    // The densest mode the glasses offer, fastest refresh among equals (the panels
-    // are natively 120 Hz). Phone/glasses links commonly top out at 1920x1080 with
-    // no 3840x1080 full-SBS mode, which hard-caps stereo at 960 columns per eye
-    // regardless of what the renderer does; 2D output stays pixel-perfect.
-    private val bestMode = glassesDisplay.supportedModes.maxWithOrNull(
-        compareBy({ it.physicalWidth.toLong() * it.physicalHeight }, { it.refreshRate })
-    )
+    // Respect the mode selected on the glasses. Requesting the largest advertised
+    // mode can undo Half SBS / 2D and retrigger a physical display reconnect.
+    private val watcher = GlassesWatcher(activity, glassesDisplay) { activity.recreate() }
 
     // A drawn pointer, not a font glyph: it points up-left like a desktop cursor and
     // its TIP sits exactly at the view's top-left corner, which is the click hotspot
@@ -171,43 +164,20 @@ class GlassesOut(
         // white; the app's screens assume the dark backdrop
         wrap.setBackgroundColor(activity.getColor(R.color.backdrop))
         wrap.addView(cursor)
-        bestMode?.let { m ->
-            presentation.window?.let { w ->
-                w.attributes = w.attributes.apply { preferredDisplayModeId = m.modeId }
-            }
-        }
         presentation.setContentView(wrap)
-        // Showing can fail even for a display the system just listed — it may have
-        // gone away in between, or be one the app is not allowed to draw on. Report
-        // it instead of crashing so the caller can keep the content on the phone.
-        try {
-            presentation.show()
-        } catch (e: Exception) {
+        GlassesPresentation(activity, presentation,
+            onDismissed = { watcher.presentationDismissed() }, onFailure = { e ->
             android.util.Log.w("NeoXR", "presentation refused by display: $e")
-            failed = true
-            // hand the wrap back unattached and cursor-free, so the caller can put
-            // it on the phone exactly as if no glasses had been found
+            watcher.close()
             wrap.removeView(cursor)
             (wrap.parent as? android.view.ViewGroup)?.removeView(wrap)
-        }
+            onFailure()
+        })
 
-        if (!failed) {
-            wrap.post {
-                cx = wrap.width / 2f
-                cy = wrap.height / 2f
-                place()
-            }
-            // system dismisses the presentation when the display goes away — fall back
-            presentation.setOnDismissListener { if (!activity.isDestroyed) activity.recreate() }
-            // tie our window to the activity's: dismiss when it is torn down
-            activity.window.decorView.addOnAttachStateChangeListener(
-                object : View.OnAttachStateChangeListener {
-                    override fun onViewAttachedToWindow(v: View) {}
-                    override fun onViewDetachedFromWindow(v: View) {
-                        presentation.setOnDismissListener(null)
-                        presentation.dismiss()
-                    }
-                })
+        wrap.post {
+            cx = wrap.width / 2f
+            cy = wrap.height / 2f
+            place()
         }
     }
 
@@ -291,8 +261,8 @@ class GlassesOut(
         }
         val dlg = android.app.AlertDialog.Builder(activity)
             .setView(box)
-            .setPositiveButton("OK") { _, _ -> onDone(input.text.toString()) }
-            .setNegativeButton("Cancel", null)
+            .setPositiveButton("确定") { _, _ -> onDone(input.text.toString()) }
+            .setNegativeButton("取消", null)
             .create()
         dlg.window?.setSoftInputMode(
             android.view.WindowManager.LayoutParams.SOFT_INPUT_STATE_VISIBLE
@@ -403,14 +373,14 @@ class GlassesOut(
                 // presentation was built with — wrap.display would still be null here
                 text = out.displayName.uppercase().take(28)
                 textSize = 11f
-                typeface = android.graphics.Typeface.MONOSPACE
-                letterSpacing = 0.18f
+                maxLines = 1
+                ellipsize = android.text.TextUtils.TruncateAt.END
                 setTextColor(activity.getColor(R.color.on_surface_variant))
-            })
+            }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
             root.addView(status)
 
             // ── button grid: Back, SBS and the caller's extras in uniform cells ──
-            val sbsBtn = stripButton(activity, "SBS") {}
+            val sbsBtn = stripButton(activity, "双屏") {}
             fun paintSbs() = sbsBtn.setTextColor(
                 activity.getColor(if (out.wrap.sbs) R.color.primary else R.color.on_surface)
             )
@@ -422,16 +392,16 @@ class GlassesOut(
             }
             paintSbs()
 
-            // "Screen" appears only when there is another display to move to — on a
+            // "屏幕" appears only when there is another display to move to — on a
             // dual-screen handheld the auto-pick may choose the built-in second panel
             val screenBtn = if (Glasses.candidates(activity).size > 1) {
-                stripButton(activity, "Screen") {
+                stripButton(activity, "屏幕") {
                     Glasses.cycle(activity)?.let { activity.recreate() }
                 }
             } else null
 
             val buttons =
-                listOf(stripButton(activity, "← Back") { activity.onBackPressed() }, sbsBtn) +
+                listOf(stripButton(activity, "← 返回") { activity.onBackPressed() }, sbsBtn) +
                         extras + listOfNotNull(screenBtn)
             for (row in buttons.chunked(4)) {
                 val line = LinearLayout(activity).apply {
@@ -454,7 +424,7 @@ class GlassesOut(
             ).apply { topMargin = dp(4) })
 
             val padHint = TextView(activity).apply {
-                text = "drag — pointer · tap — click · two fingers — scroll"
+                text = "滑动移动指针 · 轻点选择 · 双指滚动"
                 textSize = 11f
                 typeface = android.graphics.Typeface.MONOSPACE
                 gravity = Gravity.CENTER

@@ -22,7 +22,7 @@ class ImuTest {
         gyro.forEach { bb.putFloat(it) }
         accel.forEach { bb.putFloat(it) }
         if (typed) {
-            byteArrayOf(0x00, 0x40, 0x1f, 0x00, 0x00, 0x40).copyInto(b, 78)
+            bb.putInt(30, 0x0b)
         }
         return b
     }

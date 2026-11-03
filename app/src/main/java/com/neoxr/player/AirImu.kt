@@ -70,7 +70,7 @@ object AirImu {
                 if (i?.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false) == true) {
                     onReady(device)
                 } else {
-                    onFail("Head: USB access to the glasses was denied")
+                    onFail("头控：未获准通过 USB 访问眼镜")
                 }
             }
         }
@@ -106,17 +106,17 @@ object AirImu {
     ): String? {
         val um = context.getSystemService(Context.USB_SERVICE) as UsbManager
         val ifaceIndex = IMU_INTERFACE[device.productId]
-            ?: return "Head: unsupported XREAL model"
+            ?: return "头控：暂不支持此 XREAL 型号"
         val iface: UsbInterface = (0 until device.interfaceCount)
             .map { device.getInterface(it) }
             .firstOrNull { it.id == ifaceIndex && it.interfaceClass == UsbConstants.USB_CLASS_HID }
-            ?: return "Head: the glasses' sensor interface is missing"
+            ?: return "头控：未找到眼镜的传感器接口"
 
         val conn: UsbDeviceConnection = um.openDevice(device)
-            ?: return "Head: cannot open the glasses over USB"
+            ?: return "头控：无法通过 USB 连接眼镜"
         try {
             if (!conn.claimInterface(iface, true)) {
-                return "Head: the sensor interface is busy (another app may hold it)"
+                return "头控：传感器接口被占用，请关闭其他相关应用"
             }
             var inEp: UsbEndpoint? = null
             var outEp: UsbEndpoint? = null
@@ -125,10 +125,10 @@ object AirImu {
                 if (ep.direction == UsbConstants.USB_DIR_IN) inEp = inEp ?: ep
                 else outEp = outEp ?: ep
             }
-            val input = inEp ?: return "Head: the sensor has no data endpoint"
+            val input = inEp ?: return "头控：未找到传感器的数据接口"
 
             if (!sendStart(conn, iface, outEp, start = true)) {
-                return "Head: the glasses refused to start the sensor"
+                return "头控：眼镜未能启动传感器"
             }
 
             val buf = ByteArray(64)
@@ -140,7 +140,7 @@ object AirImu {
             while (!stopped()) {
                 val n = conn.bulkTransfer(input, buf, buf.size, 250)
                 if (n <= 0) {
-                    if (++idle > 40) return "Head: the sensor stopped sending data"
+                    if (++idle > 40) return "头控：传感器已停止发送数据"
                     continue
                 }
                 idle = 0

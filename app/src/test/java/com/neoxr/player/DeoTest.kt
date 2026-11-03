@@ -24,7 +24,7 @@ class DeoTest {
             Deo.parseVideo(locked)
             fail("expected premium error")
         } catch (e: IllegalArgumentException) {
-            assertTrue(e.message!!.contains("Premium"))
+            assertTrue(e is Deo.PremiumVideoException)
         }
         val free = """{"isPremium":false,"encodings":[{"name":"h264","videoSources":[{"resolution":1080,"url":"u"}]}]}"""
         assertFalse(Deo.isPremiumLocked(free))
@@ -156,8 +156,29 @@ class DeoTest {
         assertEquals(180 to "sbs", Deo.guessFormat(u, 2880, 2880)) // square anamorphic SBS
         assertEquals(0 to "sbs", Deo.guessFormat(u, 7680, 2160)) // 32:9 full SBS pair
         assertEquals(90 to "sbs", Deo.guessFormat(u, 1920, 1080)) // 16:9 web stream: wide SBS
-        assertEquals(180 to "tb", Deo.guessFormat(u, 1920, 3840)) // tall = TB pair
+        assertEquals(0 to "off", Deo.guessFormat(u, 1920, 3840)) // tall alone is not evidence of a TB pair
         assertEquals(0 to "off", Deo.guessFormat(u, 1440, 1080)) // 4:3 = plain 2D
         assertEquals(90 to "sbs", Deo.guessFormat(u)) // no signal at all: intercept prior
+    }
+
+    @Test fun untaggedPortraitVideosUseTheEntireFlatFrameForEverySource() {
+        for (url in listOf("content://media/external/video/42", "smb://nas/videos/clip.mp4",
+            "webdavs://nas/dav/clip.mp4", "https://example.com/clip.mp4")) {
+            for ((width, height) in listOf(1080 to 1920, 720 to 1280, 1080 to 1440, 1920 to 3840)) {
+                assertEquals("$url $width x $height", 0 to "off", Deo.guessFormat(url, width, height))
+            }
+        }
+    }
+
+    @Test fun explicitVrTagsStillWinOverPortraitDimensions() {
+        assertEquals(180 to "tb", Deo.guessFormat("clip_180_OU.mp4", 1920, 3840))
+        assertEquals(180 to "tb", Deo.guessFormat("clip_TB180.mp4", 1920, 3840))
+        assertEquals(0 to "tb", Deo.guessFormat("clip_TB.mp4", 1080, 1920))
+        assertEquals(180 to "sbs", Deo.guessFormat("clip_VR180.mp4", 1080, 1920))
+        assertEquals(0 to "off", Deo.guessFormat("clip_2D.mp4", 1080, 1920))
+    }
+
+    @Test fun portraitDetectionUsesDisplayPixelsRatherThanEncodedShapeAlone() {
+        assertEquals(0 to "off", Deo.guessFormat("clip.mp4", 1080, 1080, 9f / 16f))
     }
 }

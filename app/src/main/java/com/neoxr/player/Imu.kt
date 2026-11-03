@@ -6,7 +6,6 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
-import java.io.InputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.nio.ByteBuffer
@@ -20,15 +19,15 @@ import kotlin.math.atan2
 import kotlin.math.sqrt
 
 /*
- * XREAL One / One Pro head tracking over the glasses' network IMU service.
+ * XREAL One / One Pro / 1S head tracking over the glasses' network IMU service.
  *
  * The One series exposes no HID IMU — its HID interfaces carry the MCU and buttons
  * and never stream motion data. The X1 chip instead brings up a USB CDC-NCM virtual
  * ethernet link (USB interface class 2.13), and the IMU is a plain TCP service on
- * the glasses: connect to 169.254.2.1:52998 and read. There is no handshake, init
+ * the glasses: connect to 169.254.2.1 or 169.254.1.1 on port 52998 and read. No init
  * sequence or enable command; frames start arriving immediately at roughly 1000 Hz.
- * The stream carries raw gyro and accelerometer samples only — no fused quaternion
- * and no magnetometer — so orientation fusion is done on this side (see [Madgwick]).
+ * This tracker uses the raw gyro / accelerometer reports and skips interleaved
+ * magnetometer reports. Orientation fusion is done on this side (see [Madgwick]).
  * Protocol details match the XRLinuxDriver, xreal_one_driver and X-Stuff/opentrack
  * implementations.
  *
@@ -45,13 +44,10 @@ object ImuFrame {
     const val SIZE = 134
     val MAGIC = byteArrayOf(0x28, 0x36, 0x00, 0x00, 0x00, 0x80.toByte())
 
-    // gyro+accel frame marker at offset 78; other frame types share the port
-    private val TYPE_GYRO_ACCEL =
-        byteArrayOf(0x00, 0x40, 0x1f, 0x00, 0x00, 0x40)
-
     fun magicAt(b: ByteArray, off: Int): Boolean {
-        if (off + SIZE > b.size) return false
-        for (i in MAGIC.indices) if (b[off + i] != MAGIC[i]) return false
+        if (off < 0 || off > b.size - SIZE) return false
+        if (b[off] != 0x28.toByte() && b[off] != 0x27.toByte()) return false
+        for (i in 1 until MAGIC.size) if (b[off + i] != MAGIC[i]) return false
         return true
     }
 
@@ -62,9 +58,10 @@ object ImuFrame {
      * a false magic match is rejected.
      */
     fun parse(b: ByteArray, off: Int): FloatArray? {
-        for (i in TYPE_GYRO_ACCEL.indices) {
-            if (b[off + 78 + i] != TYPE_GYRO_ACCEL[i]) return null
-        }
+        if (!magicAt(b, off)) return null
+        // 1S's report type is at body offset 0x18. Bytes at 78 are padding /
+        // firmware-specific data, not a stable packet type marker.
+        if (ByteBuffer.wrap(b, off + 30, 4).order(ByteOrder.LITTLE_ENDIAN).int != 0x0b) return null
         val bb = ByteBuffer.wrap(b, off + 34, 24).order(ByteOrder.LITTLE_ENDIAN)
         val v = FloatArray(6) { bb.float } // gx gy gz ax ay az
         for (f in v) if (f.isNaN() || f.isInfinite()) return null
@@ -72,6 +69,9 @@ object ImuFrame {
         if (abs(v[3]) > 100f || abs(v[4]) > 100f || abs(v[5]) > 100f) return null
         return v
     }
+
+    fun timestamp(b: ByteArray, off: Int): Long =
+        ByteBuffer.wrap(b, off + 14, 8).order(ByteOrder.LITTLE_ENDIAN).long
 }
 
 /**
@@ -169,7 +169,7 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
     @Volatile var pitchDeg = 0f; private set
 
     @Volatile private var running = false
-    private var socket: Socket? = null
+    @Volatile private var socket: Socket? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
     private val fusion = Madgwick()
     private val bias = FloatArray(3)
@@ -182,7 +182,7 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
         ) PITCH_MOUNT_DEG else 0f
 
     private fun status(s: String) {
-        android.os.Handler(context.mainLooper).post { onStatus(s) }
+        android.os.Handler(context.mainLooper).post { if (active === this) onStatus(s) }
     }
 
     fun start() {
@@ -194,9 +194,9 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
         // Air-series glasses carry the sensor on USB HID instead of the One series'
         // TCP service — different transport, same fusion (see AirImu.kt).
         AirImu.findDevice(context)?.let { dev ->
-            status("Head: connecting to glasses…")
+            status("头控：正在连接眼镜…")
             AirImu.requestAccess(context, dev,
-                onReady = { granted -> streamAir(granted) },
+                onReady = { granted -> if (running) streamAir(granted) },
                 onFail = { msg ->
                     status(msg)
                     running = false
@@ -205,65 +205,88 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
             return
         }
 
-        status("Head: connecting to glasses…")
+        status("头控：正在连接眼镜…")
 
         // the NCM link registers as an ethernet network; grab it so the socket pins
         // to that interface even if the phone has wifi/mobile up
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         val gotNet = CountDownLatch(1)
-        var net: Network? = null // countDown() after the write makes it safe to read post-await
-        val cb = object : ConnectivityManager.NetworkCallback() {
-            override fun onAvailable(network: Network) {
-                net = network
-                gotNet.countDown()
+        val networks = java.util.concurrent.CopyOnWriteArrayList<Network>()
+        fun addNetwork(network: Network) {
+            if (cm.getNetworkCapabilities(network)?.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) == true) {
+                networks.addIfAbsent(network); gotNet.countDown()
             }
         }
+        val cb = object : ConnectivityManager.NetworkCallback() {
+            override fun onAvailable(network: Network) = addNetwork(network)
+            override fun onLost(network: Network) { networks.remove(network) }
+        }
         netCallback = cb
-        cm.registerNetworkCallback(
+        try { cm.registerNetworkCallback(
             NetworkRequest.Builder()
                 .addTransportType(NetworkCapabilities.TRANSPORT_ETHERNET)
                 .removeCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
                 .build(),
             cb
         )
+            cm.allNetworks.forEach(::addNetwork)
+        } catch (e: Exception) {
+            android.util.Log.w("NeoXR", "IMU network discovery: $e")
+        }
 
         thread(name = "xreal-imu") {
             try {
-                gotNet.await(3, TimeUnit.SECONDS)
-                val target = InetSocketAddress(HOST, PORT)
-                // Three connect paths, tried in order of robustness:
-                //  1. a socket explicitly bound to a local NCM address — the only
-                //     path that can escape a VPN's catch-all route, since binding
-                //     picks the interface before routing does;
-                //  2. the ethernet Network's socket factory — clean, but a
-                //     non-bypassable VPN makes Network.bindSocket fail with EPERM
-                //     while it is up;
-                //  3. a plain socket — works only when nothing captures the
-                //     169.254/16 link-local subnet, otherwise it routes into the tun.
-                // The glasses can bring up more than one ethernet interface (one per
-                // CDC function), so every local address is a candidate and the one
-                // on the glasses' own subnet (169.254.2.x) is tried first — the
-                // other one accepts the bind and then times out.
-                val tries = mutableListOf<Pair<String, () -> Socket>>()
-                for (la in ncmAddresses()) {
-                    tries += "bind ${la.hostAddress}" to
-                            { Socket().apply { bind(InetSocketAddress(la, 0)) } }
+                gotNet.await(2, TimeUnit.SECONDS)
+                for (attempt in 0 until 3) {
+                    if (!running) break
+                    val addresses = ncmAddresses()
+                    val hosts = OneImuEndpoints.hosts(addresses.mapNotNull { it.hostAddress })
+                    var connected = false
+                    for (host in hosts) {
+                        val tries = mutableListOf<Pair<String, () -> Socket>>()
+                        for (address in addresses.filter { OneImuEndpoints.matches(it.hostAddress.orEmpty(), host) }) {
+                            tries += "bind ${address.hostAddress}" to {
+                                Socket().also { socket ->
+                                    try { socket.bind(InetSocketAddress(address, 0)) }
+                                    catch (e: Exception) { socket.close(); throw e }
+                                }
+                            }
+                        }
+                        for (network in networks) tries += "network $network" to { network.socketFactory.createSocket() }
+                        tries += "direct" to { Socket() }
+                        for ((route, make) in tries) {
+                            if (!running) return@thread
+                            var candidate: Socket? = null
+                            try {
+                                candidate = make()
+                                socket = candidate // stop() also interrupts connect and first read
+                                if (!running) break
+                                candidate.connect(InetSocketAddress(host, PORT), 1200)
+                                candidate.soTimeout = 1000
+                                candidate.tcpNoDelay = true
+                                val reader = OneImuStream(candidate.getInputStream())
+                                val first = reader.next()
+                                if (!running) break
+                                connected = true
+                                status("头控已连接：$host\n请保持头部平稳片刻")
+                                android.util.Log.i("NeoXR", "IMU valid sample $host:$PORT via $route")
+                                readLoop(reader, first)
+                            } catch (e: Exception) {
+                                if (running) android.util.Log.w("NeoXR", "IMU $host via $route: ${e.javaClass.simpleName}: ${e.message}")
+                            } finally {
+                                try { candidate?.close() } catch (_: Exception) {}
+                                if (socket === candidate) socket = null
+                            }
+                            if (connected) break
+                        }
+                        if (connected) break
+                    }
+                    if (running && attempt < 2) {
+                        status("头控连接中断或未就绪，正在重试（${attempt + 1}/2）…")
+                        Thread.sleep(500)
+                    }
                 }
-                net?.let { n -> tries += "ethernet-net" to { n.socketFactory.createSocket() } }
-                tries += "direct" to { Socket() }
-                var s: Socket? = null
-                for ((_, make) in tries) {
-                    if (!running) return@thread
-                    try {
-                        s = make().apply { connect(target, 3000) }
-                        break
-                    } catch (_: Exception) {}
-                }
-                val sock = s ?: throw Exception("unreachable")
-                socket = sock
-                sock.tcpNoDelay = true
-                status("Head tracking ON")
-                readLoop(sock.getInputStream())
+                if (running) status(diagnose(cm))
             } catch (e: Exception) {
                 // Report what actually went wrong. Blaming a VPN unconditionally
                 // sent users without one chasing a setting they do not have.
@@ -275,7 +298,7 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
             if (running) {
                 running = false
                 val cb = onStopped
-                if (cb != null) android.os.Handler(context.mainLooper).post { cb() }
+                if (cb != null) android.os.Handler(context.mainLooper).post { if (active === this) cb() }
             }
         }
     }
@@ -287,28 +310,28 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
      * (a VPN), or the network is there but the sensor service refused us.
      */
     private fun diagnose(cm: ConnectivityManager): String {
-        if (isAir) return "Head: the glasses did not answer over USB.\nUnplug and replug them, then try again."
+        if (isAir) return "头控：眼镜未通过 USB 响应。\n请重新插拔眼镜后重试。"
         val addresses = ncmAddresses()
         val vpnUp = cm.allNetworks.any {
             cm.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
         }
         return when {
             addresses.isEmpty() && vpnUp ->
-                "Head: no connection to the glasses.\n" +
-                        "A VPN is active and may be hiding it — turn the VPN off, " +
-                        "or allow apps to bypass it, and try again."
+                "头控：未连接到眼镜。\n" +
+                        "当前 VPN 可能影响连接，请关闭 VPN，" +
+                        "或允许本应用绕过 VPN 后重试。"
             addresses.isEmpty() ->
-                "Head: the phone sees no network from the glasses.\n" +
-                        "Check that the glasses run recent firmware and that ethernet " +
-                        "is enabled in their developer menu. Head tracking needs the " +
-                        "XREAL One series."
+                "头控：手机未检测到眼镜的网络接口。\n" +
+                        "请更新眼镜固件，并在眼镜开发者菜单中" +
+                        "开启以太网。此连接方式需要 " +
+                        "XREAL One / One Pro / 1S，且手机系统须支持 USB 网络。视频输出正常并不代表 USB 网络已连接。"
             vpnUp ->
-                "Head: the glasses are visible but refused the connection.\n" +
-                        "A VPN is active — turn it off or allow apps to bypass it."
+                "头控：已检测到眼镜，但连接被拒绝。\n" +
+                        "请关闭 VPN，或允许本应用绕过 VPN。"
             else ->
-                "Head: the glasses are visible but the sensor did not answer.\n" +
-                        "Close other apps that may use it, unplug and replug the " +
-                        "glasses, and check their firmware."
+                "头控：已检测到眼镜，但传感器没有响应。\n" +
+                        "请关闭 Control Glasses、Nebula 等可能占用传感器的应用，重新插拔眼镜，" +
+                        "并检查眼镜固件。"
         }
     }
 
@@ -364,55 +387,44 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
             }
         }
         if (running) {
-            status(err ?: "Head: connection to glasses lost")
+            status(err ?: "头控：眼镜连接已断开")
             running = false
             onStopped?.let { cb -> android.os.Handler(context.mainLooper).post(cb) }
         }
     }
 
-    private fun readLoop(input: InputStream) {
-        val buf = ByteArray(ImuFrame.SIZE * 16)
-        var have = 0
+    private fun readLoop(reader: OneImuStream, first: FloatArray) {
         val startNs = System.nanoTime()
-        var lastNs = 0L
+        var previousTimestamp = 0L
         var lastEmitNs = 0L
+        var sample = first
         while (running) {
-            val r = input.read(buf, have, buf.size - have)
-            if (r < 0) break
-            have += r
-            var off = 0
-            while (have - off >= ImuFrame.SIZE) {
-                if (!ImuFrame.magicAt(buf, off)) { off++; continue }
-                val v = ImuFrame.parse(buf, off)
-                off += ImuFrame.SIZE
-                if (v == null) continue
-                val now = System.nanoTime()
-                val dt = if (lastNs == 0L) 0.001f
-                else ((now - lastNs) / 1e9f).coerceIn(0f, 0.02f)
-                lastNs = now
+            val v = sample
+            val now = System.nanoTime()
+            val timestamp = reader.timestampNs
+            val step = timestamp - previousTimestamp
+            val dt = if (previousTimestamp > 0 && step in 1..20_000_000) step / 1e9f else 0.001f
+            previousTimestamp = timestamp
 
-                // runtime gyro-bias: adapt only while nearly still (< ~2°/s)
-                if (abs(v[0]) < 0.035f && abs(v[1]) < 0.035f && abs(v[2]) < 0.035f) {
-                    for (i in 0..2) bias[i] += (v[i] - bias[i]) * 0.02f
-                }
-                // axis remap per XRLinuxDriver: (x,y,z) → (-x,-z,-y), same for accel
-                fusion.update(
-                    -(v[0] - bias[0]), -(v[2] - bias[2]), -(v[1] - bias[1]),
-                    -v[3], -v[5], -v[4], dt
-                )
-                yawDeg = YAW_SIGN * fusion.yawDeg
-                pitchDeg = PITCH_SIGN * fusion.rollDeg - pitchMount
-                // first ~0.5 s the accel correction is still leveling the horizon —
-                // don't steer the view with a converging pose
-                if (now - lastEmitNs > 16_000_000 && now - startNs > 500_000_000) {
-                    lastEmitNs = now
-                    onOrientation?.invoke(yawDeg, pitchDeg)
-                }
+            // runtime gyro-bias: adapt only while nearly still (< ~2°/s)
+            if (abs(v[0]) < 0.035f && abs(v[1]) < 0.035f && abs(v[2]) < 0.035f) {
+                for (i in 0..2) bias[i] += (v[i] - bias[i]) * 0.02f
             }
-            System.arraycopy(buf, off, buf, 0, have - off)
-            have -= off
+            // axis remap per XRLinuxDriver: (x,y,z) → (-x,-z,-y), same for accel
+            fusion.update(
+                -(v[0] - bias[0]), -(v[2] - bias[2]), -(v[1] - bias[1]),
+                -v[3], -v[5], -v[4], dt
+            )
+            yawDeg = YAW_SIGN * fusion.yawDeg
+            pitchDeg = PITCH_SIGN * fusion.rollDeg - pitchMount
+            // first ~0.5 s the accel correction is still leveling the horizon —
+            // don't steer the view with a converging pose
+            if (now - lastEmitNs > 16_000_000 && now - startNs > 500_000_000) {
+                lastEmitNs = now
+                onOrientation?.invoke(yawDeg, pitchDeg)
+            }
+            sample = reader.next()
         }
-        if (running) status("Head: connection to glasses lost")
     }
 
     fun stop() {

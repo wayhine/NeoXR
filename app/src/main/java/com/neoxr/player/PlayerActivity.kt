@@ -8,6 +8,7 @@ import android.hardware.Sensor
 import android.hardware.SensorEvent
 import android.hardware.SensorEventListener
 import android.hardware.SensorManager
+import android.media.AudioManager
 import android.opengl.GLSurfaceView
 import android.os.Bundle
 import android.os.Handler
@@ -29,12 +30,13 @@ import androidx.media3.common.Player
 import androidx.media3.common.Tracks
 import androidx.media3.common.VideoSize
 import androidx.media3.exoplayer.ExoPlayer
+import kotlin.math.roundToInt
 import kotlin.concurrent.thread
 
 /**
  * Controls: drag = look around, single tap = show/hide the control bar (playback
  * toggles only via its ▶/⏸ button), double tap = toggle phone-gyro look,
- * long press = recenter the view.
+ * phone video swipe/hold actions are configurable; remote pad long press = recenter.
  *
  * Output: with the glasses plugged in over USB-C (DisplayPort alt mode they are a
  * real external display), the video renders DIRECTLY on them via a [Presentation] —
@@ -43,6 +45,7 @@ import kotlin.concurrent.thread
  * swipe still steer the view. Without glasses everything stays on the phone as
  * before. Plug/unplug mid-play recreates the activity, keeping the position.
  */
+@androidx.annotation.OptIn(androidx.media3.common.util.UnstableApi::class)
 class PlayerActivity : Activity(), SensorEventListener {
 
     private lateinit var glView: GLSurfaceView
@@ -51,8 +54,14 @@ class PlayerActivity : Activity(), SensorEventListener {
     private var videoSurface: Surface? = null
     private var surfaceTexture: SurfaceTexture? = null
     private var streamUrl: String? = null
+    private var formatHint: String? = null // retain a SAF file's real name for later size-based detection
     private var presentation: Presentation? = null
+    private var outputWindow: GlassesPresentation? = null
     private var glassesDisplay: Display? = null
+    private lateinit var outputWatcher: GlassesWatcher
+    private var restorePlaying = true
+    private var lifecyclePaused = false
+    private var restartHead = false
     private var resumePos = 0L // carried across output switches (plug/unplug recreate)
 
     // named sbsOverlay, not "overlay": inside any View.apply{} scope a bare `overlay`
@@ -93,8 +102,24 @@ class PlayerActivity : Activity(), SensorEventListener {
     private var subsWrap: SbsFrameLayout? = null
     private lateinit var btnRw: TextView
     private lateinit var btnFf: TextView
-    private var playGroup: LinearLayout? = null // RW/play/FF, regrouped in portrait
-    private var sideGroup: LinearLayout? = null // CC + quality, regrouped in portrait
+    private lateinit var btnCenter: TextView
+    private lateinit var btnHoldSpeed: TextView
+    private lateinit var playerActions: LinearLayout
+    private var phoneSwipeSeeks = false
+    private var holdSpeedSetting = 2f
+    private var gestureSettingsOpen = false
+    private var orientationMode = "landscape"
+    private var swipeSeek: SwipeSeekGesture? = null
+    private var verticalSwipe: VerticalPlaybackSwipe? = null
+    private val audio by lazy { getSystemService(AudioManager::class.java) }
+    private var gestureVolume = 0
+    private var swipeSeekWarning = false
+    private var screenHoldAllowed = false
+    private var speedButtonTouched = false
+    private val holdSpeed = TemporaryPlaybackSpeed(
+        { player?.playbackParameters?.speed ?: 1f },
+        { speed -> player?.setPlaybackSpeed(speed) }
+    )
     private val screenBtns = HashMap<Int, TextView>()
     private val layoutBtns = HashMap<String, TextView>()
     private var sources: List<Pair<Int, String>> = emptyList()
@@ -112,6 +137,25 @@ class PlayerActivity : Activity(), SensorEventListener {
     private var zoomPct = 100 // camera magnification, in tan space
     private var seekDragging = false
     private val handler = Handler(Looper.getMainLooper())
+    private var systemAutoRotate = false
+    private var rotationObserverRegistered = false
+    private var navigationBottom = 0
+    private val rotationFollow = RotationFollowState()
+    private val rotationSettingObserver by lazy {
+        object : android.database.ContentObserver(handler) {
+            override fun onChange(selfChange: Boolean) {
+                if (rotationObserverRegistered) syncSystemRotation()
+            }
+        }
+    }
+    private val physicalRotation by lazy {
+        object : android.view.OrientationEventListener(this) {
+            override fun onOrientationChanged(orientation: Int) {
+                if (systemAutoRotate && rotationFollow.onOrientation(orientation, android.os.SystemClock.elapsedRealtime()))
+                    requestedOrientation = PlaybackOrientation.requested(orientationMode, true)
+            }
+        }
+    }
     private val hideControls = Runnable {
         controlsBar.visibility = View.GONE
         qualityList.visibility = View.GONE
@@ -119,6 +163,8 @@ class PlayerActivity : Activity(), SensorEventListener {
         leftPanel.visibility = View.GONE
         rightPanel.visibility = View.GONE
         btnClose.visibility = View.GONE
+        if (::btnCenter.isInitialized) btnCenter.visibility = View.GONE
+        if (::playerActions.isInitialized) playerActions.visibility = View.GONE
         btnScreen?.visibility = View.GONE
         findViewById<View>(R.id.eyePanel)?.visibility = View.GONE
     }
@@ -164,6 +210,8 @@ class PlayerActivity : Activity(), SensorEventListener {
         super.onCreate(savedInstanceState)
         fullscreenOverCutout()
         resumePos = savedInstanceState?.getLong("pos") ?: 0L
+        restorePlaying = savedInstanceState?.getBoolean("playing", true) ?: true
+        restartHead = savedInstanceState?.getBoolean("headTracking", false) ?: false
         getSharedPreferences("neoxr", MODE_PRIVATE).let { p ->
             subSizeSp = p.getInt("subSize", 26)
             subColor = p.getInt("subColor", 0xFFFFFFFF.toInt())
@@ -171,6 +219,8 @@ class PlayerActivity : Activity(), SensorEventListener {
             subBold = p.getBoolean("subBold", false)
             subBottomPct = p.getInt("subBottom", 8)
             headSensitivity = p.getInt("headSens", 100)
+            phoneSwipeSeeks = p.getBoolean("phoneSwipeSeeks", false)
+            holdSpeedSetting = PlaybackGestureOptions.savedHoldSpeed(p.getFloat("holdSpeed", 2f))
         }
         // diagnostic pass: dump every display the system exposes
         for (d in (getSystemService(DISPLAY_SERVICE) as DisplayManager).displays) {
@@ -182,15 +232,13 @@ class PlayerActivity : Activity(), SensorEventListener {
         }
         glassesDisplay = findGlasses()
         android.util.Log.i("NeoXR", "glassesDisplay=${glassesDisplay?.displayId}")
-        // remote mode: the phone is a controller, not a video surface — let it follow
-        // the grip (portrait is the comfortable hold); the manifest landscape lock
-        // stays for phone playback, where SBS geometry depends on it. configChanges
-        // handles the turn, applyRemoteDims resizes.
-        if (glassesDisplay != null) {
-            requestedOrientation = android.content.pm.ActivityInfo.SCREEN_ORIENTATION_USER
+        getSharedPreferences("neoxr", MODE_PRIVATE).let { p ->
+            orientationMode = PlaybackOrientation.saved(p.getString("playbackOrientation", null), glassesDisplay != null,
+                p.getInt("playbackOrientationLock", android.content.pm.ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE))
         }
-        (getSystemService(DISPLAY_SERVICE) as DisplayManager)
-            .registerDisplayListener(displayListener, handler)
+        systemAutoRotate = readSystemAutoRotate()
+        requestedOrientation = PlaybackOrientation.requested(orientationMode, systemAutoRotate)
+        outputWatcher = GlassesWatcher(this, glassesDisplay) { recreate() }
 
         // when the glasses display exists, the GL view lives on IT (via Presentation),
         // so it must be built with the presentation's display context
@@ -199,10 +247,32 @@ class PlayerActivity : Activity(), SensorEventListener {
         renderer = VrRenderer { st ->
             android.util.Log.i("NeoXR", "GL surface ready (onSurfaceReady)")
             runOnUiThread {
+                if (isDestroyed || isFinishing) { st.release(); return@runOnUiThread }
+                val previousTexture = surfaceTexture
                 surfaceTexture = st
-                maybeStart()
+                val currentPlayer = player
+                if (currentPlayer == null) maybeStart() else {
+                    // EGL can be recreated by a mode switch / resume. Rebind the
+                    // decoder to its new texture instead of leaving the last frame.
+                    val previousSurface = videoSurface
+                    videoSurface = Surface(st)
+                    currentPlayer.setVideoSurface(videoSurface)
+                    previousSurface?.release()
+                    if (previousTexture !== st) previousTexture?.release()
+                }
             }
         }
+        renderer.monoOutput = if (ext == null && savedInstanceState?.getBoolean("outputOnGlasses") == true) true
+            else savedInstanceState?.getBoolean("monoOutput", true) ?: true
+        if (savedInstanceState?.containsKey("projection") == true) {
+            screenAngle = savedInstanceState.getInt("projection")
+            stereo = savedInstanceState.getString("sourceStereo") ?: "sbs"
+            formatAuto = savedInstanceState.getBoolean("formatAuto")
+            dragYaw = savedInstanceState.getFloat("dragYaw")
+            dragPitch = savedInstanceState.getFloat("dragPitch")
+            renderer.configure(screenAngle, stereo)
+        }
+        ext?.mode?.let { renderer.stereoOutputAspect = VideoGeometry.glassesEyeAspect(it.physicalWidth, it.physicalHeight) }
         // picture calibration describes the glasses, so it is restored per launch —
         // and only here: renderer is lateinit, reading prefs into it any earlier
         // throws before the player ever draws
@@ -220,25 +290,24 @@ class PlayerActivity : Activity(), SensorEventListener {
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
             keepScreenOn = true
         }
-        // Native-resolution output on the glasses: ask for their densest mode (in SBS
-        // a 3840x1080 link gives a true 1920 per eye instead of 960) and pin the GL
-        // buffer to physical pixels — sidesteps the scaled "logical" resolution some
-        // OEM display stacks run external displays at.
-        val bestMode = ext?.supportedModes?.maxWithOrNull(
-            compareBy({ it.physicalWidth.toLong() * it.physicalHeight }, { it.refreshRate })
-        )
-        if (bestMode != null) {
-            pickedModeId = bestMode.modeId
-            presentation?.window?.let { w ->
-                w.attributes = w.attributes.apply { preferredDisplayModeId = bestMode.modeId }
-            }
-            glView.holder.setFixedSize(bestMode.physicalWidth, bestMode.physicalHeight)
+        // Use the active physical mode, never request another mode on the glasses.
+        // A Half SBS / 2D switch can change the entire DP connection.
+        ext?.mode?.let { mode ->
+            glView.holder.setFixedSize(mode.physicalWidth, mode.physicalHeight)
         }
-        // controls overlay: drawn SBS on the phone-only path (so it merges in the
-        // mirroring glasses); a plain single copy in remote mode — the phone screen
-        // is just a controller there and nobody looks at it through lenses
-        sbsOverlay = SbsFrameLayout(this).apply { sbs = ext == null }
+        sbsOverlay = SbsFrameLayout(this).apply { sbs = ext == null && !renderer.monoOutput }
         layoutInflater.inflate(R.layout.player_controls, sbsOverlay, true)
+        sbsOverlay.setOnApplyWindowInsetsListener { _, insets ->
+            @Suppress("DEPRECATION")
+            val bottom = if (android.os.Build.VERSION.SDK_INT >= 30)
+                insets.getInsetsIgnoringVisibility(android.view.WindowInsets.Type.navigationBars()).bottom
+                else insets.stableInsetBottom
+            if (navigationBottom != bottom) {
+                navigationBottom = bottom
+                sbsOverlay.post { if (::btn3d.isInitialized && !isDestroyed) applyPlayerDims() }
+            }
+            insets
+        }
         val root = FrameLayout(this)
         root.keepScreenOn = true
         if (ext == null) {
@@ -265,7 +334,7 @@ class PlayerActivity : Activity(), SensorEventListener {
                 glassesRoot.addView(glView, FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
                 ))
-                val subs = SbsFrameLayout(it.context).apply { sbs = !subStereoSource }
+                val subs = SbsFrameLayout(it.context).apply { sbs = !renderer.monoOutput && !subStereoSource }
                 subsWrap = subs
                 subs.addView(androidx.media3.ui.SubtitleView(it.context).apply {
                     glassesSubs = this
@@ -281,20 +350,14 @@ class PlayerActivity : Activity(), SensorEventListener {
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
                 ))
                 it.setContentView(glassesRoot)
-                it.show()
-                android.util.Log.i("NeoXR", "presentation shown on display ${ext?.displayId}")
+                outputWindow = GlassesPresentation(this, it,
+                    onDismissed = { outputWatcher.presentationDismissed() },
+                    onFailure = { e ->
+                        fallbackToPhone(root, e)
+                        applyPlayerDims()
+                    })
             } catch (e: Exception) {
-                // The display listed itself but refuses windows. Rather than leave a
-                // remote controlling nothing, move the video back onto the phone.
-                android.util.Log.e("NeoXR", "presentation FAILED: $e")
-                it.dismiss()
-                presentation = null
-                glassesDisplay = null
-                levelView?.let { lv -> root.removeView(lv) }
-                (glView.parent as? android.view.ViewGroup)?.removeView(glView)
-                root.addView(glView, 0)
-                sbsOverlay.sbs = true
-                sbsOverlay.flash("Glasses output unavailable — playing on the phone")
+                fallbackToPhone(root, e)
             }
         }
         controlsBar = sbsOverlay.findViewById(R.id.controlsBar)
@@ -306,9 +369,22 @@ class PlayerActivity : Activity(), SensorEventListener {
         qualityList = sbsOverlay.findViewById(R.id.qualityList)
         trackList = sbsOverlay.findViewById(R.id.trackList)
         trackScroll = sbsOverlay.findViewById(R.id.trackScroll)
+        controlsBar.addOnLayoutChangeListener { _, _, top, _, bottom, _, oldTop, _, oldBottom ->
+            if (bottom - top != oldBottom - oldTop && ::btn3d.isInitialized) {
+                sbsOverlay.post { if (!isDestroyed) applyPlayerDims() }
+            }
+        }
 
         btnPlay.setOnClickListener {
-            player?.let { if (it.isPlaying) it.pause() else it.play() }
+            endHoldSpeed()
+            player?.let {
+                if (it.playbackState == Player.STATE_ENDED) {
+                    it.seekTo(0)
+                    it.play()
+                } else if (it.playWhenReady) it.pause() else {
+                    it.play()
+                }
+            }
             showControls()
         }
         // relative seek: fine for both local files and streams (CLOSEST_SYNC keeps
@@ -316,13 +392,10 @@ class PlayerActivity : Activity(), SensorEventListener {
         fun seekBy(deltaMs: Long) {
             player?.let {
                 if (!it.isCurrentMediaItemSeekable) {
-                    sbsOverlay.flash("This video does not support seeking")
+                    sbsOverlay.flash("此视频不支持调整进度")
                     return@let
                 }
-                val dur = it.duration.coerceAtLeast(0)
-                var to = it.currentPosition + deltaMs
-                if (dur > 0) to = to.coerceAtMost(dur - 1000)
-                it.seekTo(to.coerceAtLeast(0))
+                it.seekTo(relativeSeekTarget(it.currentPosition, it.duration, deltaMs))
             }
             showControls()
         }
@@ -332,6 +405,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         btnFf.setOnClickListener { seekBy(+15_000) }
         btnRw.setOnLongClickListener { seekBy(-60_000); true }
         btnFf.setOnLongClickListener { seekBy(+300_000); true }
+        setupQuickControls()
 
         subtitleView = sbsOverlay.findViewById<androidx.media3.ui.SubtitleView>(R.id.subtitleText)
             .apply { styleSubtitles(this); visibility = View.VISIBLE }
@@ -364,40 +438,49 @@ class PlayerActivity : Activity(), SensorEventListener {
         renderer.heightScale = 1f
         val eyePanel = sbsOverlay.findViewById<View>(R.id.eyePanel)
         btn3d = sbsOverlay.findViewById(R.id.btn3d)
-        applyRemoteDims()
+        applyPlayerDims()
         btn3d.setOnClickListener {
+            if (gestureSettingsOpen) closeGestureSettings()
+            applyPlayerDims()
             eyePanel.visibility =
                 if (eyePanel.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+            if (eyePanel.visibility == View.VISIBLE) {
+                trackScroll.visibility = View.GONE
+                qualityList.visibility = View.GONE
+                eyePanel.bringToFront()
+            }
             showControls()
         }
         sbsOverlay.findViewById<TextView>(R.id.btnEyeMinus).setOnClickListener { adjustEyeShift(-2) }
         sbsOverlay.findViewById<TextView>(R.id.btnEyePlus).setOnClickListener { adjustEyeShift(2) }
         sbsOverlay.findViewById<TextView>(R.id.btnHMinus).setOnClickListener { adjustHeight(-5) }
         sbsOverlay.findViewById<TextView>(R.id.btnHPlus).setOnClickListener { adjustHeight(+5) }
-        // phone playback only: the glasses need the pair, the phone screen does not
+        // Output layout is independent of the video's SBS/TB source format.
+        // A mono view works on the glasses too, provided their own 3D mode is off.
         sbsOverlay.findViewById<TextView>(R.id.btnMono).apply {
-            if (glassesDisplay == null) {
-                visibility = View.VISIBLE
-                fun paint() {
-                    text = "Output: " + if (renderer.monoOutput) "single view" else "stereo pair"
-                    setTextColor(getColor(
-                        if (renderer.monoOutput) R.color.primary else R.color.on_surface_variant
-                    ))
-                }
-                paint()
-                setOnClickListener {
-                    renderer.monoOutput = !renderer.monoOutput
-                    sbsOverlay.sbs = !renderer.monoOutput
-                    paint()
-                    showControls()
-                }
+            visibility = View.VISIBLE
+            fun paint() {
+                val mode = glassesDisplay?.mode
+                val wide = mode != null && mode.physicalWidth.toFloat() / mode.physicalHeight >= 2.5f
+                text = "输出：" + if (renderer.monoOutput) "单画面" else if (wide) "SBS 全宽" else "SBS 半宽"
+                setTextColor(getColor(if (renderer.monoOutput) R.color.primary else R.color.on_surface_variant))
+            }
+            paint()
+            setOnClickListener {
+                renderer.monoOutput = !renderer.monoOutput
+                sbsOverlay.sbs = glassesDisplay == null && !renderer.monoOutput
+                subsWrap?.sbs = !renderer.monoOutput && !subStereoSource
+                paint(); applyPlayerDims(); showControls()
+                if (glassesDisplay != null) sbsOverlay.flash(if (renderer.monoOutput)
+                    "单画面输出到眼镜：请将眼镜的 3D 模式关闭"
+                    else "SBS 输出到眼镜：请在眼镜菜单选择与输出匹配的半宽 / 全宽模式，关闭 REAL 3D")
             }
         }
         sbsOverlay.findViewById<TextView>(R.id.btnAmbient).apply {
             var step = getSharedPreferences("neoxr", MODE_PRIVATE).getInt("glow", 0)
                 .coerceIn(0, AMBIENT_STEPS.lastIndex)
             fun paint() {
-                text = "Ambient glow: " + AMBIENT_NAMES[step]
+                text = "氛围光：" + AMBIENT_NAMES[step]
                 setTextColor(getColor(
                     if (step > 0) R.color.primary else R.color.on_surface_variant
                 ))
@@ -439,14 +522,51 @@ class PlayerActivity : Activity(), SensorEventListener {
                 player?.let {
                     // surface the reason instead of a silently dead slider
                     if (it.isCurrentMediaItemSeekable) it.seekTo(sb.progress * 1000L)
-                    else sbsOverlay.flash("This video does not support seeking")
+                    else sbsOverlay.flash("此视频不支持调整进度")
                 }
                 showControls()
             }
         })
 
         val gestures = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent): Boolean {
+                swipeSeekWarning = false
+                swipeSeek = if (glassesDisplay == null && phoneSwipeSeeks && !gestureSettingsOpen)
+                    SwipeSeekGesture(player?.currentPosition ?: 0, player?.duration ?: 0, glView.width) else null
+                verticalSwipe = if (swipeSeek != null) startVerticalSwipe(e.x >= glView.width / 2f) else null
+                return true
+            }
+
             override fun onScroll(e1: MotionEvent?, e2: MotionEvent, dx: Float, dy: Float): Boolean {
+                if (holdSpeed.active || gestureSettingsOpen) return true
+                if (glassesDisplay == null && phoneSwipeSeeks) {
+                    val session = swipeSeek ?: return true
+                    if (e1 == null) return true
+                    val target = session.move(e2.x - e1.x, e2.y - e1.y)
+                    if (session.vertical) {
+                        if (!swipeSeekWarning) adjustVerticalSwipe(e2.y - e1.y)
+                        return true
+                    }
+                    val p = player
+                    if (p == null || !p.isCurrentMediaItemSeekable || p.duration <= 0) {
+                        if (!swipeSeekWarning) sbsOverlay.flash("此视频不支持滑动调整进度")
+                        swipeSeekWarning = true
+                        return true
+                    }
+                    target?.let { target ->
+                        showControls()
+                        handler.removeCallbacks(hideControls)
+                        val delta = (target - session.start) / 1000
+                        sbsOverlay.findViewById<TextView>(R.id.swipeSeekPreview).apply {
+                            text = "${Deo.formatDuration((target / 1000).toInt())} / ${Deo.formatDuration((p.duration / 1000).toInt())}\n" +
+                                "%+d秒 · 松手跳转".format(delta)
+                            visibility = View.VISIBLE
+                        }
+                        seek.progress = (target / 1000).toInt()
+                        timePos.text = Deo.formatDuration((target / 1000).toInt())
+                    }
+                    return true
+                }
                 dragYaw += dx * 0.12f
                 dragPitch -= dy * 0.12f
                 applyView()
@@ -457,6 +577,8 @@ class PlayerActivity : Activity(), SensorEventListener {
                 // remote mode: the phone screen IS the controls — nothing to
                 // unclutter, so a tap must not hide them
                 if (glassesDisplay != null) return true
+                if (gestureSettingsOpen) { closeGestureSettings(); return true }
+                if (holdSpeed.active) return true
                 // phone playback: controls visibility only — play/pause via ►/❙❙
                 if (controlsBar.visibility == View.VISIBLE) {
                     handler.removeCallbacks(hideControls)
@@ -468,20 +590,36 @@ class PlayerActivity : Activity(), SensorEventListener {
             }
 
             override fun onDoubleTap(e: MotionEvent): Boolean {
+                if (gestureSettingsOpen) { closeGestureSettings(); return true }
                 gyroEnabled = !gyroEnabled
                 recenter()
-                sbsOverlay.flash(if (gyroEnabled) "Gyro ON" else "Gyro OFF")
+                sbsOverlay.flash(if (gyroEnabled) "陀螺仪已开启" else "陀螺仪已关闭")
                 return true
             }
 
             override fun onLongPress(e: MotionEvent) {
-                recenter()
+                if (!screenHoldAllowed || gestureSettingsOpen) return
+                if (glassesDisplay == null) beginHoldSpeed() else recenter()
             }
         })
         // look-around gestures: on the GL view itself when it is on the phone, on the
         // whole phone screen (acting as a touchpad) when the video is on the glasses
         (if (glassesDisplay == null) glView else root).setOnTouchListener { _, ev ->
-            gestures.onTouchEvent(ev)
+            if (ev.actionMasked == MotionEvent.ACTION_DOWN) screenHoldAllowed = true
+            if (ev.pointerCount > 1) {
+                screenHoldAllowed = false
+                endHoldSpeed()
+                MotionEvent.obtain(ev).also { cancel ->
+                    cancel.action = MotionEvent.ACTION_CANCEL
+                    gestures.onTouchEvent(cancel)
+                    cancel.recycle()
+                }
+            } else if (screenHoldAllowed) gestures.onTouchEvent(ev)
+            if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
+                finishSwipeSeek(commit = ev.actionMasked == MotionEvent.ACTION_UP)
+                screenHoldAllowed = false
+                endHoldSpeed()
+            }
             true
         }
         if (glassesDisplay != null) showControls() // a remote keeps its buttons visible
@@ -498,8 +636,10 @@ class PlayerActivity : Activity(), SensorEventListener {
             else -> null
         }
         if (extUri != null) {
-            val (angle, layout) = Deo.guessFormat(displayName(extUri) ?: extUri.toString())
-            setFormat(angle, layout)
+            formatHint = displayName(extUri) ?: extUri.toString()
+            val (angle, layout) = Deo.guessFormat(formatHint!!)
+            if (savedInstanceState?.containsKey("projection") != true) setFormat(angle, layout)
+            else setFormat(screenAngle, stereo)
             streamUrl = extUri.toString()
             buildQualityList()
             maybeStart()
@@ -511,7 +651,8 @@ class PlayerActivity : Activity(), SensorEventListener {
         // when the decoder reports it (onVideoSizeChanged), unless overridden manually.
         intent.getStringExtra("stream")?.let { url ->
             val (angle, layout) = Deo.guessFormat(url)
-            setFormat(angle, layout)
+            if (savedInstanceState?.containsKey("projection") != true) setFormat(angle, layout)
+            else setFormat(screenAngle, stereo)
             streamUrl = url
             buildQualityList()
             maybeStart()
@@ -536,14 +677,15 @@ class PlayerActivity : Activity(), SensorEventListener {
                         break
                     } catch (e: Exception) {
                         lastErr = e
-                        if (videoUrl == null || e.message?.contains("Premium") == true) break
+                        if (videoUrl == null || e is Deo.PremiumVideoException) break
                         Thread.sleep(600)
                     }
                 }
                 val vi = info ?: throw lastErr!!
                 runOnUiThread {
                     formatFromFeed = true
-                    setFormat(vi.angleDeg, vi.stereo)
+                    if (savedInstanceState?.containsKey("projection") != true) setFormat(vi.angleDeg, vi.stereo)
+                    else setFormat(screenAngle, stereo)
                     streamUrl = vi.url
                     sources = vi.sources
                     buildQualityList()
@@ -551,9 +693,28 @@ class PlayerActivity : Activity(), SensorEventListener {
                 }
             } catch (e: Exception) {
                 // shown in-layout so it is readable in the glasses; Back exits
-                runOnUiThread { sbsOverlay.flash("Error: ${e.message}") }
+                runOnUiThread { sbsOverlay.flash("加载失败：${e.message}") }
             }
         }
+    }
+
+    private fun fallbackToPhone(root: FrameLayout, error: Exception) {
+        android.util.Log.e("NeoXR", "presentation FAILED: $error", error)
+        outputWindow?.close()
+        outputWindow = null
+        presentation?.setOnDismissListener(null)
+        presentation?.dismiss()
+        presentation = null
+        glassesDisplay = null
+        glassesSubs = null
+        subsWrap = null
+        levelView?.let { root.removeView(it) }
+        (glView.parent as? android.view.ViewGroup)?.removeView(glView)
+        root.addView(glView, 0)
+        renderer.monoOutput = true
+        glView.holder.setSizeFromLayout()
+        sbsOverlay.sbs = false
+        sbsOverlay.flash("无法输出到眼镜，已改为手机播放")
     }
 
     private fun findGlasses(): Display? = Glasses.find(this)
@@ -567,36 +728,20 @@ class PlayerActivity : Activity(), SensorEventListener {
         uri.lastPathSegment
     }
 
-    // Plugging/unplugging mid-play moves the whole pipeline (GL context, surface,
-    // player) between screens — a clean recreate is the reliable way; the playback
-    // position rides along in the saved state.
-    private val displayListener = object : DisplayManager.DisplayListener {
-        override fun onDisplayAdded(displayId: Int) = maybeSwitchOutput()
-        override fun onDisplayRemoved(displayId: Int) = maybeSwitchOutput()
-        override fun onDisplayChanged(displayId: Int) {
-            // the glasses' 3D/SBS menu toggle can change the advertised mode list on
-            // the fly: re-pick the densest mode if a better one appeared. Whether a
-            // full-width SBS mode is offered at all depends on the host's DP stack.
-            if (displayId != glassesDisplay?.displayId) return
-            val best = glassesDisplay?.supportedModes?.maxWithOrNull(
-                compareBy({ it.physicalWidth.toLong() * it.physicalHeight }, { it.refreshRate })
-            ) ?: return
-            if (pickedModeId != 0 && best.modeId != pickedModeId) recreate()
-        }
-    }
-    private var pickedModeId = 0 // display mode this session was built for
-
-    private fun maybeSwitchOutput() {
-        android.util.Log.i(
-            "NeoXR",
-            "display change: now=${findGlasses()?.displayId} was=${glassesDisplay?.displayId}"
-        )
-        if ((findGlasses() == null) != (glassesDisplay == null)) recreate()
-    }
-
+    // Display reconnects are debounced by GlassesWatcher, including a presentation
+    // cancelled by Android even if the replacement display reuses the same ID.
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putLong("pos", player?.currentPosition ?: resumePos)
+        outState.putBoolean("playing", if (lifecyclePaused) restorePlaying else player?.playWhenReady ?: restorePlaying)
+        outState.putBoolean("headTracking", headMode || restartHead)
+        outState.putBoolean("monoOutput", renderer.monoOutput)
+        outState.putBoolean("outputOnGlasses", glassesDisplay != null)
+        outState.putInt("projection", screenAngle)
+        outState.putString("sourceStereo", stereo)
+        outState.putBoolean("formatAuto", formatAuto)
+        outState.putFloat("dragYaw", dragYaw)
+        outState.putFloat("dragPitch", dragPitch)
     }
 
     private fun maybeStart() {
@@ -613,7 +758,8 @@ class PlayerActivity : Activity(), SensorEventListener {
             // through media3's default set (http, file, content, asset)
             .setMediaSourceFactory(
                 androidx.media3.exoplayer.source.DefaultMediaSourceFactory(
-                    if (Smb.isSmb(url)) Smb.Source.Factory()
+                    if (WebDav.isWebDav(url)) WebDavSource.Factory()
+                    else if (Smb.isSmb(url)) Smb.Source.Factory()
                     else androidx.media3.datasource.DefaultDataSource.Factory(this)
                 )
             )
@@ -646,11 +792,12 @@ class PlayerActivity : Activity(), SensorEventListener {
             // open falls back to where this video was last left
             val start = if (resumePos > 0L) resumePos else rememberedPosition(url)
             if (start > 0L && resumePos == 0L) {
-                sbsOverlay.flash("Resuming at " + Deo.formatDuration((start / 1000).toInt()))
+                sbsOverlay.flash("续播至 " + Deo.formatDuration((start / 1000).toInt()))
             }
             setMediaItem(MediaItem.fromUri(url), start)
             addListener(object : Player.Listener {
                 override fun onPlayerError(error: PlaybackException) {
+                    cancelHoldPlayback()
                     android.util.Log.e("NeoXR", "player error: $error", error)
                     // A codec the device cannot decode kills the whole playback,
                     // even when only the audio track is at fault (AC-3 and DTS are
@@ -667,14 +814,24 @@ class PlayerActivity : Activity(), SensorEventListener {
                             p.prepare()
                             p.play()
                         }
-                        sbsOverlay.flash("This audio track is not supported — playing without sound")
+                        sbsOverlay.flash("此音轨不受支持，已静音播放")
                         return
                     }
                     // include the error code: the message alone is often a generic
                     // "Source error" and the code is what identifies the real cause
                     sbsOverlay.flash(
-                        "Player error: ${error.errorCodeName}\n${error.message}"
+                        "播放失败：${error.errorCodeName}\n${error.message}"
                     )
+                }
+
+                override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                    if (!playWhenReady) endHoldSpeed()
+                    updateProgress()
+                }
+
+                override fun onPlaybackStateChanged(state: Int) {
+                    if (state == Player.STATE_ENDED || state == Player.STATE_IDLE) endHoldSpeed()
+                    updateProgress()
                 }
 
                 // subtitles come as cues because the video itself lives in a GL
@@ -705,19 +862,309 @@ class PlayerActivity : Activity(), SensorEventListener {
 
                 override fun onVideoSizeChanged(size: VideoSize) {
                     // the flat screen needs the frame shape to keep its proportions
-                    renderer.setVideoSize(size.width, size.height)
+                    renderer.setVideoSize(size.width, size.height, size.pixelWidthHeightRatio)
                     // metadata-less streams only: refine the URL guess once with the
                     // real frame aspect, then leave the format alone (manual wins)
-                    if (formatFromFeed || !formatAuto || size.width == 0) return
+                    if (formatFromFeed || !formatAuto || size.width == 0 || size.height == 0) return
                     formatAuto = false
                     val (angle, layout) =
-                        Deo.guessFormat(streamUrl ?: return, size.width, size.height)
+                        Deo.guessFormat(formatHint ?: streamUrl ?: return, size.width, size.height, size.pixelWidthHeightRatio)
                     if (angle != screenAngle || layout != stereo) setFormat(angle, layout)
                 }
             })
             prepare()
-            playWhenReady = true
+            playWhenReady = restorePlaying
         }
+    }
+
+    private fun setupQuickControls() {
+        val d = resources.displayMetrics.density
+        val quick = sbsOverlay.findViewById<LinearLayout>(R.id.quickControls)
+        btnCenter = sbsOverlay.findViewById(R.id.btnCenter)
+        btnHoldSpeed = sbsOverlay.findViewById(R.id.btnHoldSpeed)
+        playerActions = sbsOverlay.findViewById(R.id.playerActions)
+        sbsOverlay.findViewById<View>(R.id.btnOrientation).setOnClickListener {
+            toggleOrientation()
+        }
+        sbsOverlay.findViewById<View>(R.id.btnGestureSettings).setOnClickListener {
+            if (gestureSettingsOpen) closeGestureSettings() else showGestureSettings()
+        }
+        quick.removeView(btnCenter)
+        (btnClose.parent as android.view.ViewGroup).removeView(btnClose)
+        playerActions.addView(btnCenter, LinearLayout.LayoutParams((72 * d).toInt(), (36 * d).toInt())
+            .apply { marginStart = (6 * d).toInt() })
+        playerActions.addView(btnClose, LinearLayout.LayoutParams((48 * d).toInt(), (36 * d).toInt())
+            .apply { marginStart = (6 * d).toInt() })
+        btnCenter.setOnClickListener { recenter(); sbsOverlay.flash("视角已回正"); showControls() }
+        btnHoldSpeed.setOnClickListener {
+            sbsOverlay.flash("按住以 ${PlaybackGestureOptions.speedLabel(holdSpeedSetting)} 播放，松手恢复")
+        }
+        btnHoldSpeed.setOnLongClickListener { view ->
+            if (speedButtonTouched) beginHoldSpeed() else view.performClick()
+            true
+        }
+        btnHoldSpeed.setOnTouchListener { view, event ->
+            when (event.actionMasked) {
+                MotionEvent.ACTION_DOWN -> speedButtonTouched = true
+                MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> { speedButtonTouched = false; endHoldSpeed() }
+                MotionEvent.ACTION_POINTER_DOWN -> { speedButtonTouched = false; view.cancelLongPress(); endHoldSpeed() }
+                MotionEvent.ACTION_MOVE -> if (event.x < 0 || event.y < 0 || event.x >= view.width || event.y >= view.height) {
+                    speedButtonTouched = false; view.cancelLongPress(); endHoldSpeed()
+                }
+            }
+            false // TextView still handles clicks, long clicks and accessibility.
+        }
+        if (glassesDisplay == null) {
+            // The compact header owns Controls / Center / Close; no stacked phone buttons.
+            btnCenter.visibility = View.GONE
+        } else {
+            quick.visibility = View.VISIBLE
+            listOf(btnRw, btnPlay, btnFf).forEachIndexed { index, button ->
+                (button.parent as android.view.ViewGroup).removeView(button)
+                quick.addView(button, index)
+            }
+            btnRw.text = "−10秒"; btnRw.contentDescription = "后退10秒，长按后退1分钟"
+            btnPlay.text = "播放"
+            btnFf.text = "+15秒"; btnFf.contentDescription = "前进15秒，长按前进5分钟"
+            for (index in 0 until quick.childCount) {
+                (quick.getChildAt(index) as TextView).apply {
+                    textSize = 11f; gravity = Gravity.CENTER; maxLines = 2
+                    setPadding((2 * d).toInt(), 0, (2 * d).toInt(), 0)
+                    setBackgroundResource(R.drawable.bg_input)
+                    layoutParams = LinearLayout.LayoutParams(0, (48 * d).toInt(), 1f)
+                        .apply { if (index < quick.childCount - 1) marginEnd = (4 * d).toInt() }
+                }
+            }
+        }
+        updateHoldSpeedLabels()
+        updateOrientationButton()
+    }
+
+    private fun beginHoldSpeed() {
+        if (holdSpeedSetting == 0f || swipeSeek?.target != null || swipeSeek?.vertical == true) return
+        val p = player ?: return
+        if (!p.isCommandAvailable(Player.COMMAND_SET_SPEED_AND_PITCH)) {
+            sbsOverlay.flash("此视频不支持调整倍速")
+            return
+        }
+        if (!p.playWhenReady || p.playbackState == Player.STATE_IDLE || p.playbackState == Player.STATE_ENDED) {
+            sbsOverlay.flash("请先播放视频，再使用长按倍速")
+            return
+        }
+        if (!holdSpeed.begin(p.playWhenReady, holdSpeedSetting)) return
+        handler.removeCallbacks(hideControls)
+        sbsOverlay.findViewById<View>(R.id.speedIndicator).visibility = View.VISIBLE
+        btnHoldSpeed.setBackgroundResource(R.drawable.bg_row_active)
+    }
+
+    private fun endHoldSpeed() {
+        if (!holdSpeed.active) return
+        holdSpeed.end()
+        sbsOverlay.findViewById<View>(R.id.speedIndicator).visibility = View.GONE
+        btnHoldSpeed.setBackgroundResource(R.drawable.bg_input)
+        if (glassesDisplay == null && controlsBar.visibility == View.VISIBLE) {
+            handler.removeCallbacks(hideControls)
+            handler.postDelayed(hideControls, 3000)
+        }
+    }
+
+    private fun cancelHoldPlayback() {
+        finishSwipeSeek(commit = false)
+        screenHoldAllowed = false
+        speedButtonTouched = false
+        if (::btnHoldSpeed.isInitialized) { btnHoldSpeed.cancelLongPress(); btnHoldSpeed.isPressed = false }
+        endHoldSpeed()
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (!hasFocus) cancelHoldPlayback()
+    }
+
+    override fun dispatchTouchEvent(event: MotionEvent): Boolean {
+        // Catch cancellation even when Android splits different fingers between buttons.
+        if (event.actionMasked == MotionEvent.ACTION_POINTER_DOWN || event.actionMasked == MotionEvent.ACTION_CANCEL)
+            cancelHoldPlayback()
+        return super.dispatchTouchEvent(event)
+    }
+
+    private fun startVerticalSwipe(volume: Boolean): VerticalPlaybackSwipe {
+        if (volume) {
+            gestureVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+            val min = if (android.os.Build.VERSION.SDK_INT >= 28)
+                audio.getStreamMinVolume(AudioManager.STREAM_MUSIC) else 0
+            return VerticalPlaybackSwipe(true, gestureVolume.toFloat(), min.toFloat(),
+                audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).toFloat(), glView.height)
+        }
+        val brightness = window.attributes.screenBrightness.takeIf { it >= 0f }
+            ?: (android.provider.Settings.System.getInt(contentResolver,
+                android.provider.Settings.System.SCREEN_BRIGHTNESS, 128) / 255f)
+        return VerticalPlaybackSwipe(false, brightness.coerceIn(0.02f, 1f), 0.02f, 1f, glView.height)
+    }
+
+    private fun adjustVerticalSwipe(deltaY: Float) {
+        val session = verticalSwipe ?: return
+        val value = session.move(deltaY) ?: return
+        val label = if (session.volume) {
+            if (audio.isVolumeFixed) {
+                swipeSeekWarning = true
+                sbsOverlay.flash("当前设备的音量由外部设备控制")
+                return
+            }
+            try {
+                val index = value.roundToInt()
+                if (index != gestureVolume) {
+                    audio.setStreamVolume(AudioManager.STREAM_MUSIC, index, 0)
+                    gestureVolume = audio.getStreamVolume(AudioManager.STREAM_MUSIC)
+                }
+            } catch (_: SecurityException) {
+                swipeSeekWarning = true
+                sbsOverlay.flash("系统暂不允许调整音量，请使用音量键")
+                return
+            }
+            val max = audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC).coerceAtLeast(1)
+            "音量 ${(gestureVolume * 100f / max).roundToInt()}%"
+        } else {
+            window.attributes = window.attributes.apply { screenBrightness = value }
+            "亮度 ${(value * 100).roundToInt()}%"
+        }
+        sbsOverlay.findViewById<TextView>(R.id.swipeSeekPreview).apply {
+            text = label
+            visibility = View.VISIBLE
+        }
+        handler.removeCallbacks(hideControls)
+    }
+
+    private fun finishSwipeSeek(commit: Boolean) {
+        verticalSwipe = null
+        val session = swipeSeek ?: return
+        swipeSeek = null
+        val target = session.finish(cancelled = !commit)
+        if (target != null) player?.let { p ->
+            if (p.isCurrentMediaItemSeekable && p.duration > 0) p.seekTo(target.coerceIn(0, p.duration))
+        }
+        sbsOverlay.findViewById<View>(R.id.swipeSeekPreview).visibility = View.GONE
+        updateProgress()
+        if (controlsBar.visibility == View.VISIBLE && glassesDisplay == null && !gestureSettingsOpen && !holdSpeed.active) {
+            handler.removeCallbacks(hideControls)
+            handler.postDelayed(hideControls, 3000)
+        }
+    }
+
+    private fun updateHoldSpeedLabels() {
+        val label = PlaybackGestureOptions.speedLabel(holdSpeedSetting)
+        btnHoldSpeed.text = "按住$label"
+        btnHoldSpeed.contentDescription = "长按播放倍速：$label"
+        btnHoldSpeed.isEnabled = holdSpeedSetting > 0
+        btnHoldSpeed.alpha = if (holdSpeedSetting > 0) 1f else 0.45f
+        sbsOverlay.findViewById<TextView>(R.id.speedIndicator).text = "$label · 松手恢复"
+    }
+
+    private fun toggleOrientation() {
+        cancelHoldPlayback()
+        if (gestureSettingsOpen) closeGestureSettings()
+        orientationMode = PlaybackOrientation.next(currentOrientationMode())
+        if (systemAutoRotate) rotationFollow.holdManual()
+        getSharedPreferences("neoxr", MODE_PRIVATE).edit()
+            .putString("playbackOrientation", orientationMode).remove("playbackOrientationLock").apply()
+        requestedOrientation = PlaybackOrientation.requested(orientationMode)
+        updateOrientationButton()
+        showControls()
+    }
+
+    private fun updateOrientationButton() {
+        sbsOverlay.findViewById<TextView>(R.id.btnOrientation).apply {
+            text = if (PlaybackOrientation.next(currentOrientationMode()) == "portrait") "竖屏" else "横屏"
+            contentDescription = "点击切换到${text}播放"
+        }
+    }
+
+    private fun currentOrientationMode() = if (systemAutoRotate && !rotationFollow.manualOverride) {
+        if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT) "portrait" else "landscape"
+    } else orientationMode
+
+    private fun readSystemAutoRotate() = android.provider.Settings.System.getInt(contentResolver,
+        android.provider.Settings.System.ACCELEROMETER_ROTATION, 0) != 0
+
+    private fun syncSystemRotation() {
+        val enabled = readSystemAutoRotate()
+        if (systemAutoRotate && !enabled) {
+            orientationMode = if (resources.configuration.orientation == android.content.res.Configuration.ORIENTATION_PORTRAIT)
+                "portrait" else "landscape"
+            getSharedPreferences("neoxr", MODE_PRIVATE).edit().putString("playbackOrientation", orientationMode).apply()
+        }
+        systemAutoRotate = enabled
+        rotationFollow.reset()
+        if (enabled) physicalRotation.enable() else physicalRotation.disable()
+        requestedOrientation = PlaybackOrientation.requested(orientationMode, enabled)
+        if (::playerActions.isInitialized) updateOrientationButton()
+    }
+
+    private fun showGestureSettings() {
+        cancelHoldPlayback()
+        gestureSettingsOpen = true
+        qualityList.visibility = View.GONE
+        trackScroll.visibility = View.GONE
+        sbsOverlay.findViewById<View>(R.id.eyePanel).visibility = View.GONE
+        val rows = sbsOverlay.findViewById<LinearLayout>(R.id.gestureSettingsRows)
+        val d = resources.displayMetrics.density
+        rows.removeAllViews()
+        fun header(label: String) = rows.addView(TextView(this).apply {
+            text = label; textSize = 12f; setTextColor(getColor(R.color.on_surface))
+            setPadding((6 * d).toInt(), (8 * d).toInt(), 0, (6 * d).toInt())
+        })
+        fun choices(items: List<Pair<String, Boolean>>, choose: (Int) -> Unit) {
+            val line = LinearLayout(this)
+            items.forEachIndexed { index, (label, selected) ->
+                line.addView(TextView(this).apply {
+                    text = label; textSize = 11f; gravity = Gravity.CENTER
+                    mark(this, selected)
+                    setOnClickListener { choose(index); showGestureSettings() }
+                }, LinearLayout.LayoutParams(0, (40 * d).toInt(), 1f).apply { marginEnd = (4 * d).toInt() })
+            }
+            rows.addView(line, LinearLayout.LayoutParams(-1, -2).apply { bottomMargin = (6 * d).toInt() })
+        }
+        header("手机画面滑动")
+        choices(listOf("调整视角" to !phoneSwipeSeeks, "调整进度" to phoneSwipeSeeks)) { index ->
+            phoneSwipeSeeks = index == 1
+            getSharedPreferences("neoxr", MODE_PRIVATE).edit().putBoolean("phoneSwipeSeeks", phoneSwipeSeeks).apply()
+        }
+        if (phoneSwipeSeeks) rows.addView(TextView(this).apply {
+            text = "左右滑动调进度；左侧上下调屏幕亮度，右侧上下调音量。上滑增大，下滑减小。"
+            textSize = 10f; setTextColor(getColor(R.color.on_surface_variant))
+            setPadding((6 * d).toInt(), 0, (6 * d).toInt(), (8 * d).toInt())
+        })
+        header("长按倍速 · 松手恢复")
+        PlaybackGestureOptions.holdSpeeds.chunked(4).forEach { speeds ->
+            choices(speeds.map { PlaybackGestureOptions.speedLabel(it) to (it == holdSpeedSetting) }) { index ->
+                holdSpeedSetting = speeds[index]
+                getSharedPreferences("neoxr", MODE_PRIVATE).edit().putFloat("holdSpeed", holdSpeedSetting).apply()
+                updateHoldSpeedLabels()
+            }
+        }
+        rows.addView(TextView(this).apply {
+            text = "完成"; textSize = 12f; gravity = Gravity.CENTER
+            setTextColor(getColor(R.color.primary)); setPadding(0, (8 * d).toInt(), 0, (8 * d).toInt())
+            setOnClickListener { closeGestureSettings() }
+        })
+        val panel = sbsOverlay.findViewById<View>(R.id.gestureSettings)
+        (panel.layoutParams as FrameLayout.LayoutParams).apply {
+            height = minOf((320 * d).toInt(), (sbsOverlay.height * 0.72f).toInt())
+        }.also { panel.layoutParams = it }
+        panel.visibility = View.VISIBLE
+        panel.bringToFront()
+        showControls()
+    }
+
+    private fun closeGestureSettings() {
+        gestureSettingsOpen = false
+        sbsOverlay.findViewById<View>(R.id.gestureSettings).visibility = View.GONE
+        showControls()
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        if (gestureSettingsOpen) closeGestureSettings() else super.onBackPressed()
     }
 
     /** Applies projection + eye layout to the renderer and highlights the side buttons. */
@@ -725,7 +1172,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         screenAngle = angle
         stereo = layout
         renderer.configure(angle, layout)
-        player?.videoSize?.let { renderer.setVideoSize(it.width, it.height) }
+        player?.videoSize?.let { renderer.setVideoSize(it.width, it.height, it.pixelWidthHeightRatio) }
         for ((a, b) in screenBtns) mark(b, a == angle)
         for ((l, b) in layoutBtns) mark(b, l == layout)
     }
@@ -767,7 +1214,7 @@ class PlayerActivity : Activity(), SensorEventListener {
                     text = caption
                     textSize = 9f
                     typeface = android.graphics.Typeface.MONOSPACE
-                    letterSpacing = 0.22f
+                    letterSpacing = 0f
                     // setGravity: the column() parameter `gravity` shadows the property
                     setGravity(Gravity.CENTER)
                     setTextColor(getColor(R.color.on_surface_variant))
@@ -797,8 +1244,8 @@ class PlayerActivity : Activity(), SensorEventListener {
                 parent.addView(this)
             }
 
-        leftPanel = column(Gravity.START, "SCREEN")
-        for ((angle, label) in listOf(0 to "Flat", 90 to "Wide", 180 to "180°", 360 to "360°")) {
+        leftPanel = column(Gravity.START, "画面投影")
+        for ((angle, label) in listOf(0 to "平面", 90 to "宽屏", 180 to "180°", 360 to "360°")) {
             screenBtns[angle] = button(leftPanel, label) {
                 formatAuto = false
                 setFormat(angle, stereo)
@@ -813,19 +1260,19 @@ class PlayerActivity : Activity(), SensorEventListener {
             // compact caption: the landscape column budget is tight (5 rows must
             // clear the bar on a ~353dp screen), so this adds ~15dp, not ~26dp
             leftPanel.addView(TextView(this).apply {
-                text = "LOOK"
+                text = "视角控制"
                 textSize = 8f
                 typeface = android.graphics.Typeface.MONOSPACE
-                letterSpacing = 0.22f
+                letterSpacing = 0f
                 setGravity(Gravity.CENTER)
                 setTextColor(getColor(R.color.on_surface_variant))
             }, LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
             ).apply { topMargin = (5 * d).toInt() })
-            btnHead = button(leftPanel, "Head") { toggleHead() }
+            btnHead = button(leftPanel, "头控") { toggleHead() }
         }
-        rightPanel = column(Gravity.END, "LAYOUT")
-        for ((layout, label) in listOf("off" to "2D", "sbs" to "SBS", "tb" to "OU")) {
+        rightPanel = column(Gravity.END, "立体布局")
+        for ((layout, label) in listOf("off" to "二维", "sbs" to "左右", "tb" to "上下")) {
             layoutBtns[layout] = button(rightPanel, label) {
                 formatAuto = false
                 setFormat(screenAngle, layout)
@@ -871,16 +1318,16 @@ class PlayerActivity : Activity(), SensorEventListener {
                 return value
             }
             rightPanel.gravity = Gravity.CENTER_HORIZONTAL
-            wValue = stepper("W") { adjustWidth(it * 5) }
-            hValue = stepper("H") { adjustHeight(it * 5) }
-            zValue = stepper("Z") { adjustZoom(it * 10) }
+            wValue = stepper("宽") { adjustWidth(it * 5) }
+            hValue = stepper("高") { adjustHeight(it * 5) }
+            zValue = stepper("缩") { adjustZoom(it * 10) }
             wRow = stepperRows[stepperRows.size - 3]
             hRow = stepperRows[stepperRows.size - 2]
         } else {
-            button(rightPanel, "W−") { adjustWidth(-5) }
-            button(rightPanel, "W+") { adjustWidth(+5) }
-            button(rightPanel, "Z−") { adjustZoom(-10) }
-            button(rightPanel, "Z+") { adjustZoom(+10) }
+            button(rightPanel, "宽−") { adjustWidth(-5) }
+            button(rightPanel, "宽+") { adjustWidth(+5) }
+            button(rightPanel, "缩−") { adjustZoom(-10) }
+            button(rightPanel, "缩+") { adjustZoom(+10) }
         }
 
         // close: top center, clear of both side columns; inside the overlay so both
@@ -899,12 +1346,12 @@ class PlayerActivity : Activity(), SensorEventListener {
             sbsOverlay.addView(this)
         }
 
-        // "Screen" switches which display the video renders on — the auto-pick can
+        // "屏幕" switches which display the video renders on — the auto-pick can
         // land on a second built-in panel on dual-screen devices. Only shown when
         // there is somewhere else to go.
         if (glassesDisplay != null && Glasses.candidates(this).size > 1) {
             btnScreen = TextView(this).apply {
-                text = "Screen"
+                text = "屏幕"
                 textSize = 12f
                 gravity = Gravity.CENTER
                 setTextColor(getColor(R.color.on_surface_variant))
@@ -920,108 +1367,90 @@ class PlayerActivity : Activity(), SensorEventListener {
     }
 
     /**
-     * Remote-mode sizes for both orientations, applied at build and on every
+     * Playback controls for both orientations, applied at build and on every
      * rotation (configChanges — no recreate). Portrait narrows the side columns
      * (76dp buttons / 112dp steppers vs 100/124 in landscape) so the central
      * look-around pad stays big; the 3D panel and quality list move ABOVE the
      * columns in portrait — side-by-side there is no width left for them.
      */
-    private fun applyRemoteDims() {
-        if (glassesDisplay == null) return
+    private fun applyPlayerDims() {
+        if (!::btn3d.isInitialized) return
         val d = resources.displayMetrics.density
+        val remote = glassesDisplay != null
         val portrait = resources.configuration.orientation ==
                 android.content.res.Configuration.ORIENTATION_PORTRAIT
-        val btnW = ((if (portrait) 76 else 100) * d).toInt()
+        val btnW = ((if (portrait) 76 else if (remote) 100 else 84) * d).toInt()
         val stepW = ((if (portrait) 112 else 124) * d).toInt()
         val txt = if (portrait) 13f else 14f
         for (b in screenBtns.values + layoutBtns.values + listOfNotNull(btnHead)) {
             b.textSize = txt
             b.layoutParams = (b.layoutParams as LinearLayout.LayoutParams)
-                .apply { width = btnW }
+                .apply {
+                    width = btnW
+                    height = ((if (portrait) 36 else 32) * d).toInt()
+                    topMargin = ((if (portrait) 4 else 2) * d).toInt()
+                }
         }
         for (r in stepperRows) {
             r.layoutParams = (r.layoutParams as LinearLayout.LayoutParams)
-                .apply { width = stepW }
+                .apply {
+                    width = stepW
+                    height = ((if (portrait) 44 else 32) * d).toInt()
+                    topMargin = ((if (portrait) 4 else 2) * d).toInt()
+                }
         }
 
-        // two-storey bar in portrait: the seek row keeps the full width, while
-        // play (center), 3D (left) and quality (right) move up to their own row
-        val rowTop = sbsOverlay.findViewById<FrameLayout>(R.id.rowTop)
-        val rowMain = sbsOverlay.findViewById<LinearLayout>(R.id.rowMain)
-        fun frameLp(gravity: Int) = FrameLayout.LayoutParams(
-            FrameLayout.LayoutParams.WRAP_CONTENT, FrameLayout.LayoutParams.WRAP_CONTENT, gravity
-        )
-        fun rowLp() = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT
-        )
-        if (portrait && btnPlay.parent === rowMain) {
-            listOf(btnRw, btnPlay, btnFf, btn3d, btnQuality).forEach { rowMain.removeView(it) }
-            btnTracks?.let { rowMain.removeView(it) }
-            val play = playGroup ?: LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                playGroup = this
-            }
-            val side = sideGroup ?: LinearLayout(this).apply {
-                orientation = LinearLayout.HORIZONTAL
-                gravity = Gravity.CENTER_VERTICAL
-                sideGroup = this
-            }
-            play.removeAllViews(); side.removeAllViews()
-            listOf(btnRw, btnPlay, btnFf).forEach { play.addView(it, rowLp()) }
-            btnTracks?.let { side.addView(it, rowLp()) }
-            side.addView(btnQuality, rowLp())
-            rowTop.removeAllViews()
-            rowTop.addView(btn3d, frameLp(Gravity.START or Gravity.CENTER_VERTICAL))
-            rowTop.addView(play, frameLp(Gravity.CENTER))
-            rowTop.addView(side, frameLp(Gravity.END or Gravity.CENTER_VERTICAL))
-            rowTop.visibility = View.VISIBLE
-        } else if (!portrait && btnPlay.parent !== rowMain) {
-            playGroup?.removeAllViews(); sideGroup?.removeAllViews()
-            rowTop.removeAllViews()
-            rowTop.visibility = View.GONE
-            rowMain.addView(btnRw, 0, rowLp())
-            rowMain.addView(btnPlay, 1, rowLp())
-            rowMain.addView(btnFf, 2, rowLp())
-            rowMain.addView(btn3d, rowLp())
-            btnTracks?.let { rowMain.addView(it, rowLp()) }
-            rowMain.addView(btnQuality, rowLp())
-        }
+        PlayerControlRows.arrange(sbsOverlay, portrait, remote,
+            if (remote || renderer.monoOutput) navigationBottom else 0)
 
         // ✕: top-right in portrait (the front camera sits top-center there);
         // top-center in landscape, where the side columns own the corners
-        (btnClose.layoutParams as FrameLayout.LayoutParams).let {
+        (playerActions.layoutParams as FrameLayout.LayoutParams).let {
             it.gravity = Gravity.TOP or
                     (if (portrait) Gravity.END else Gravity.CENTER_HORIZONTAL)
             it.marginEnd = ((if (portrait) 12 else 0) * d).toInt()
+            it.topMargin = ((if (portrait) 32 else 8) * d).toInt()
         }
-        btnClose.layoutParams = btnClose.layoutParams
+        playerActions.layoutParams = playerActions.layoutParams
+        btnScreen?.let { button ->
+            (button.layoutParams as FrameLayout.LayoutParams).apply {
+                topMargin = ((if (portrait) 80 else 8) * d).toInt()
+            }.also { button.layoutParams = it }
+        }
 
         // W and H live in the right column when there is height for them (portrait)
         // and inside the 3D panel otherwise — the landscape column has no room left
         wRow?.visibility = if (portrait) View.VISIBLE else View.GONE
         hRow?.visibility = if (portrait) View.VISIBLE else View.GONE
         sbsOverlay.findViewById<View>(R.id.panelWidthRow)?.visibility =
-            if (portrait) View.GONE else View.VISIBLE
+            if (remote && portrait) View.GONE else View.VISIBLE
         sbsOverlay.findViewById<View>(R.id.panelHeightRow)?.visibility =
-            if (portrait) View.GONE else View.VISIBLE
+            if (remote && portrait) View.GONE else View.VISIBLE
 
         // the deeper portrait bar pushes the columns (and the panels above them) up
-        val colBottom = if (portrait) 122 else 68
+        val barBottom = (controlsBar.layoutParams as FrameLayout.LayoutParams).bottomMargin
+        val colBottom = maxOf(((if (portrait) 170 else if (remote) 116 else 68) * d).toInt(),
+            controlsBar.height + barBottom + (12 * d).toInt())
         for (col in listOf(leftPanel, rightPanel)) {
             (col.layoutParams as FrameLayout.LayoutParams).bottomMargin =
-                (colBottom * d).toInt()
+                colBottom
             col.layoutParams = col.layoutParams
         }
-        // columns: caption ~26dp + 5 rows of 48dp above the bar
-        val colTop = colBottom + 26 + 5 * 48 + 8
         val eyePanel = sbsOverlay.findViewById<View>(R.id.eyePanel)
         (eyePanel.layoutParams as FrameLayout.LayoutParams).let {
-            it.marginStart = ((if (portrait) 24 else 146) * d).toInt()
-            it.marginEnd = ((if (portrait) 24 else 146) * d).toInt()
-            it.bottomMargin = ((if (portrait) colTop else 76) * d).toInt()
+            it.marginStart = ((if (portrait) 16 else if (remote) 146 else 112) * d).toInt()
+            it.marginEnd = it.marginStart
+            it.bottomMargin = maxOf(controlsBar.height + barBottom + (6 * d).toInt(),
+                ((if (portrait) 150 else if (remote) 124 else 76) * d).toInt())
+            it.topMargin = (8 * d).toInt()
         }
         eyePanel.layoutParams = eyePanel.layoutParams
+        if (!remote) subtitleView?.let { subtitles ->
+            (subtitles.layoutParams as FrameLayout.LayoutParams).apply {
+                bottomMargin = maxOf(((if (portrait) 170 else 70) * d).toInt(),
+                    controlsBar.height + barBottom + (12 * d).toInt())
+            }.also { subtitles.layoutParams = it }
+        }
     }
 
     /**
@@ -1030,12 +1459,14 @@ class PlayerActivity : Activity(), SensorEventListener {
      * them under the buttons whenever the bar changed depth.
      */
     private fun showPopup(popup: View) {
+        if (gestureSettingsOpen) closeGestureSettings()
         val d = resources.displayMetrics.density
         (popup.layoutParams as FrameLayout.LayoutParams).let {
+            if (popup === trackScroll) it.width = minOf((280 * d).toInt(), sbsOverlay.width - (16 * d).toInt()).coerceAtLeast(1)
             it.gravity = Gravity.BOTTOM or Gravity.END
             it.marginStart = (8 * d).toInt()
             it.marginEnd = (8 * d).toInt()
-            it.bottomMargin = controlsBar.height + (14 * d).toInt()
+            it.bottomMargin = controlsBar.height + (controlsBar.layoutParams as FrameLayout.LayoutParams).bottomMargin + (6 * d).toInt()
         }
         popup.layoutParams = popup.layoutParams
         popup.visibility = View.VISIBLE
@@ -1045,7 +1476,19 @@ class PlayerActivity : Activity(), SensorEventListener {
 
     override fun onConfigurationChanged(newConfig: android.content.res.Configuration) {
         super.onConfigurationChanged(newConfig)
-        applyRemoteDims()
+        if (!::controlsBar.isInitialized) { fullscreenOverCutout(); return }
+        if (systemAutoRotate && !rotationFollow.manualOverride) {
+            orientationMode = currentOrientationMode()
+            getSharedPreferences("neoxr", MODE_PRIVATE).edit().putString("playbackOrientation", orientationMode).apply()
+        }
+        updateOrientationButton()
+        cancelHoldPlayback()
+        if (gestureSettingsOpen) closeGestureSettings()
+        qualityList.visibility = View.GONE
+        trackScroll.visibility = View.GONE
+        sbsOverlay.findViewById<View>(R.id.eyePanel).visibility = View.GONE
+        applyPlayerDims()
+        sbsOverlay.post { if (!isDestroyed) applyPlayerDims() }
         fullscreenOverCutout() // insets shift on rotation
     }
 
@@ -1067,7 +1510,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         zoomPct = (zoomPct + delta).coerceIn(50, 300)
         applyFov()
         // remote steppers show the value inline; the SBS overlay has no readout — flash
-        zValue?.also { it.text = "Z $zoomPct" } ?: sbsOverlay.flash("Zoom $zoomPct%")
+        zValue?.also { it.text = "缩 $zoomPct" } ?: sbsOverlay.flash("缩放 $zoomPct%")
         showControls()
     }
 
@@ -1100,8 +1543,8 @@ class PlayerActivity : Activity(), SensorEventListener {
     private fun adjustHeight(delta: Int) {
         heightPct = (heightPct + delta).coerceIn(50, 200)
         renderer.heightScale = heightPct / 100f
-        sbsOverlay.findViewById<TextView>(R.id.txtH)?.text = "H $heightPct"
-        hValue?.text = "H $heightPct"
+        sbsOverlay.findViewById<TextView>(R.id.txtH)?.text = "高 $heightPct"
+        hValue?.text = "高 $heightPct"
         showControls()
     }
 
@@ -1109,9 +1552,9 @@ class PlayerActivity : Activity(), SensorEventListener {
     private fun adjustWidth(delta: Int) {
         widthPct = (widthPct + delta).coerceIn(50, 200)
         renderer.widthScale = widthPct / 100f
-        wValue?.text = "W $widthPct"
-        sbsOverlay.findViewById<TextView>(R.id.txtW)?.text = "W $widthPct"
-        if (wValue == null && glassesDisplay == null) sbsOverlay.flash("Width $widthPct%")
+        wValue?.text = "宽 $widthPct"
+        sbsOverlay.findViewById<TextView>(R.id.txtW)?.text = "宽 $widthPct"
+        if (wValue == null && glassesDisplay == null) sbsOverlay.flash("宽度 $widthPct%")
         showControls()
     }
 
@@ -1125,7 +1568,7 @@ class PlayerActivity : Activity(), SensorEventListener {
     private fun applyEyeShift() {
         renderer.eyeShiftPx = (eyeShiftDp * resources.displayMetrics.density).toInt()
         findViewById<TextView>(R.id.txtEye)?.text =
-            if (eyeShiftDp == 0) "3D" else "3D%+d".format(eyeShiftDp)
+            if (eyeShiftDp == 0) "景深" else "景深%+d".format(eyeShiftDp)
     }
 
     private fun showControls() {
@@ -1133,11 +1576,14 @@ class PlayerActivity : Activity(), SensorEventListener {
         leftPanel.visibility = View.VISIBLE
         rightPanel.visibility = View.VISIBLE
         btnClose.visibility = View.VISIBLE
+        if (::playerActions.isInitialized) playerActions.visibility = View.VISIBLE
+        if (::btnCenter.isInitialized) btnCenter.visibility = View.VISIBLE
         btnScreen?.visibility = View.VISIBLE
         handler.removeCallbacks(hideControls)
         // auto-hide only when the controls sit over the video itself; the remote
         // screen is all theirs — hiding them there would just add taps
-        if (glassesDisplay == null) handler.postDelayed(hideControls, 3000)
+        if (glassesDisplay == null && !holdSpeed.active && !gestureSettingsOpen && swipeSeek?.target == null)
+            handler.postDelayed(hideControls, 3000)
         updateProgress()
     }
 
@@ -1147,7 +1593,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         val durSec = (p.duration.coerceAtLeast(0) / 1000).toInt()
         val posSec = (p.currentPosition.coerceAtLeast(0) / 1000).toInt()
         seek.max = durSec
-        if (!seekDragging) {
+        if (!seekDragging && swipeSeek?.target == null) {
             seek.progress = posSec
             timePos.text = Deo.formatDuration(posSec)
         }
@@ -1155,7 +1601,11 @@ class PlayerActivity : Activity(), SensorEventListener {
         // U+2759 bars / U+25BA pointer: glyphs with NO emoji variant at all. U+23F8
         // has one, and some vendor fonts draw the colored emoji form (ignoring
         // textColor) even with the FE0E text-presentation selector appended.
-        btnPlay.text = if (p.isPlaying) "❙❙" else "►"
+        val playing = p.playWhenReady && p.playbackState != Player.STATE_ENDED
+        btnPlay.text = if (glassesDisplay != null) {
+            if (playing) "暂停" else "播放"
+        } else if (playing) "❙❙" else "►"
+        btnPlay.contentDescription = if (playing) "暂停播放" else "播放视频"
     }
 
     /**
@@ -1182,9 +1632,9 @@ class PlayerActivity : Activity(), SensorEventListener {
             btnQuality.text =
                 sources.firstOrNull { it.second == streamUrl }?.let { "${it.first}p" } ?: "…"
         } else {
-            entry("Auto", qualityCap == 0) { capQuality(0) }
+            entry("自动", qualityCap == 0) { capQuality(0) }
             for (h in trackHeights) entry("${h}p", qualityCap == h) { capQuality(h) }
-            btnQuality.text = if (qualityCap == 0) "Auto" else "${qualityCap}p"
+            btnQuality.text = if (qualityCap == 0) "自动" else "${qualityCap}p"
         }
         // local files have a single encode — nothing to choose, so no button
         val localFile = intent.data != null && streamUrl?.startsWith("http") != true
@@ -1214,7 +1664,7 @@ class PlayerActivity : Activity(), SensorEventListener {
                 this.text = text
                 textSize = 9f
                 typeface = android.graphics.Typeface.MONOSPACE
-                letterSpacing = 0.18f
+                letterSpacing = 0f
                 setPadding(padH, padV, padH, 2)
                 setTextColor(getColor(R.color.on_surface_variant))
             })
@@ -1227,7 +1677,9 @@ class PlayerActivity : Activity(), SensorEventListener {
                 text = label
                 textSize = 20f
                 gravity = Gravity.CENTER
-                setPadding(padH, padV, padH, padV)
+                setPadding(0, padV, 0, padV)
+                maxLines = 1
+                minHeight = (48 * resources.displayMetrics.density).toInt()
                 setTextColor(getColor(R.color.on_surface))
                 setOnClickListener {
                     val next = (value + delta).coerceIn(range.first, range.last)
@@ -1236,7 +1688,8 @@ class PlayerActivity : Activity(), SensorEventListener {
                     buildPictureMenu()
                     showControls()
                 }
-                line.addView(this, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                line.addView(this, LinearLayout.LayoutParams(
+                    (56 * resources.displayMetrics.density).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT))
             }
             btn("−", -step)
             line.addView(TextView(this).apply {
@@ -1247,34 +1700,34 @@ class PlayerActivity : Activity(), SensorEventListener {
                 setTextColor(getColor(R.color.on_surface_variant))
             }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f))
             btn("+", +step)
-            trackList.addView(line)
+            trackList.addView(line, LinearLayout.LayoutParams(-1, -2))
         }
 
-        header("BLACK LEVEL")
+        header("黑位")
         row("picBlack", (renderer.blackLevel * 100).toInt(), 2, -10..30) {
             renderer.blackLevel = it / 100f
         }
-        header("BRIGHTNESS")
+        header("亮度")
         row("picBright", (renderer.brightness * 100).toInt(), 2, -30..30) {
             renderer.brightness = it / 100f
         }
-        header("CONTRAST")
+        header("对比度")
         row("picContrast", (renderer.contrast * 100).toInt(), 5, 70..160) {
             renderer.contrast = it / 100f
         }
-        header("GAMMA   (below 100 opens shadows)")
+        header("伽马 · 低于100提亮暗部")
         row("picGamma", (renderer.gamma * 100).toInt(), 5, 60..160) {
             renderer.gamma = it / 100f
         }
-        header("GLOW WIDTH")
+        header("氛围光宽度")
         row("glowWidth", (renderer.ambientInset * 100).toInt(), 2, 70..96) {
             renderer.ambientInset = it / 100f
         }
-        header("HEAD / GYRO SENSITIVITY")
+        header("头控 / 陀螺仪灵敏度")
         row("headSens", headSensitivity, 5, 25..150) { headSensitivity = it }
 
         trackList.addView(TextView(this).apply {
-            text = "Reset picture"
+            text = "重置画质"
             textSize = 14f
             setPadding(padH, padV, padH, padV)
             setTextColor(getColor(R.color.primary))
@@ -1305,7 +1758,7 @@ class PlayerActivity : Activity(), SensorEventListener {
                 this.text = text
                 textSize = 9f
                 typeface = android.graphics.Typeface.MONOSPACE
-                letterSpacing = 0.18f
+                letterSpacing = 0f
                 setPadding(padH, padV, padH, 2)
                 setTextColor(getColor(R.color.on_surface_variant))
             })
@@ -1333,16 +1786,16 @@ class PlayerActivity : Activity(), SensorEventListener {
             val lang = f.language?.takeIf { it.isNotBlank() && it != "und" }
             val label = f.label
             return listOfNotNull(label, lang?.uppercase()).joinToString(" · ")
-                .ifEmpty { "Track ${i + 1}" }
+                .ifEmpty { "轨道 ${i + 1}" }
         }
 
         for (type in listOf(C.TRACK_TYPE_AUDIO, C.TRACK_TYPE_TEXT)) {
             val groups = p.currentTracks.groups.filter { it.type == type && it.length > 0 }
             if (groups.isEmpty()) continue
-            header(if (type == C.TRACK_TYPE_AUDIO) "AUDIO" else "SUBTITLES")
+            header(if (type == C.TRACK_TYPE_AUDIO) "音轨" else "字幕")
             if (type == C.TRACK_TYPE_TEXT) {
                 val off = p.trackSelectionParameters.disabledTrackTypes.contains(C.TRACK_TYPE_TEXT)
-                entry("Off", off) {
+                entry("关闭", off) {
                     p.trackSelectionParameters = p.trackSelectionParameters.buildUpon()
                         .setTrackTypeDisabled(C.TRACK_TYPE_TEXT, true)
                         .build()
@@ -1356,10 +1809,10 @@ class PlayerActivity : Activity(), SensorEventListener {
                 for (i in 0 until g.length) {
                     val ok = g.isTrackSupported(i)
                     val label = describe(g.getTrackFormat(i), i) +
-                            if (ok) "" else "   (not supported)"
+                            if (ok) "" else "   （不支持）"
                     entry(label, g.isTrackSelected(i)) {
                         if (ok) select(g, i)
-                        else sbsOverlay.flash("This device cannot decode that track")
+                        else sbsOverlay.flash("设备无法解码此轨道")
                     }
                 }
             }
@@ -1373,7 +1826,9 @@ class PlayerActivity : Activity(), SensorEventListener {
                     text = label
                     textSize = 20f
                     gravity = Gravity.CENTER
-                    setPadding(padH, padV, padH, padV)
+                    setPadding(0, padV, 0, padV)
+                    maxLines = 1
+                    minHeight = (48 * resources.displayMetrics.density).toInt()
                     setTextColor(getColor(R.color.on_surface))
                     setOnClickListener {
                         set((value + delta).coerceIn(range.first, range.last))
@@ -1383,7 +1838,8 @@ class PlayerActivity : Activity(), SensorEventListener {
                         buildTrackMenu()
                         showControls()
                     }
-                    row.addView(this, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f))
+                    row.addView(this, LinearLayout.LayoutParams(
+                        (56 * resources.displayMetrics.density).toInt(), LinearLayout.LayoutParams.WRAP_CONTENT))
                 }
                 btn("−", -step)
                 row.addView(TextView(this).apply {
@@ -1394,17 +1850,17 @@ class PlayerActivity : Activity(), SensorEventListener {
                     setTextColor(getColor(R.color.on_surface_variant))
                 }, LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1.2f))
                 btn("+", +step)
-                trackList.addView(row)
+                trackList.addView(row, LinearLayout.LayoutParams(-1, -2))
             }
 
-            header("SUBTITLE SIZE")
+            header("字幕大小")
             stepper("subSize", subSizeSp, 2, 12..60) { subSizeSp = it }
 
-            header("SUBTITLE HEIGHT")
+            header("字幕高度")
             stepper("subBottom", subBottomPct, 2, -20..100) { subBottomPct = it }
 
-            header("SUBTITLE WEIGHT")
-            entry(if (subBold) "Bold" else "Regular", subBold) {
+            header("字幕字重")
+            entry(if (subBold) "粗体" else "常规", subBold) {
                 subBold = !subBold
                 getSharedPreferences("neoxr", MODE_PRIVATE)
                     .edit().putBoolean("subBold", subBold).apply()
@@ -1412,13 +1868,13 @@ class PlayerActivity : Activity(), SensorEventListener {
                 buildTrackMenu()
             }
 
-            header("SUBTITLE COLOUR")
+            header("字幕颜色")
             val colours = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL }
             for ((name, argb) in listOf(
-                "White" to 0xFFFFFFFF.toInt(),
-                "Yellow" to 0xFFFFE44D.toInt(),
-                "Cyan" to 0xFF6FE7FF.toInt(),
-                "Green" to 0xFF8CFF8C.toInt()
+                "白色" to 0xFFFFFFFF.toInt(),
+                "黄色" to 0xFFFFE44D.toInt(),
+                "青色" to 0xFF6FE7FF.toInt(),
+                "绿色" to 0xFF8CFF8C.toInt()
             )) {
                 colours.addView(TextView(this).apply {
                     text = if (subColor == argb) "●" else "○"
@@ -1441,15 +1897,15 @@ class PlayerActivity : Activity(), SensorEventListener {
 
             // Tracks authored for 3D releases already carry a left/right pair, so
             // duplicating them per eye yields four copies — this turns that off.
-            header("SUBTITLE SOURCE")
+            header("字幕源布局")
             entry(
-                if (subStereoSource) "Already 3D (no duplication)" else "Normal (one per eye)",
+                if (subStereoSource) "已为立体字幕（不再复制）" else "普通字幕（双眼各显示一次）",
                 false
             ) {
                 subStereoSource = !subStereoSource
                 getSharedPreferences("neoxr", MODE_PRIVATE)
                     .edit().putBoolean("subStereo", subStereoSource).apply()
-                subsWrap?.sbs = !subStereoSource
+                subsWrap?.sbs = !renderer.monoOutput && !subStereoSource
                 buildTrackMenu()
             }
         }
@@ -1494,7 +1950,7 @@ class PlayerActivity : Activity(), SensorEventListener {
             headTracker?.stop()
             headTracker = null
             btnHead?.let { mark(it, false) }
-            sbsOverlay.flash("Head tracking OFF")
+            sbsOverlay.flash("头控已关闭")
         } else {
             headMode = true
             btnHead?.let { mark(it, true) }
@@ -1572,8 +2028,8 @@ class PlayerActivity : Activity(), SensorEventListener {
             // Portrait: the columns fill the lower half — center the cross in the
             // free zone between the top hints and the column tops.
             val portrait = height > width
-            val cy = height * (if (portrait) 0.27f else 0.44f)
-            val half = Math.min(width, height) * 0.24f
+            val cy = height * (if (portrait) 0.27f else 0.38f)
+            val half = Math.min(width, height) * (if (portrait) 0.24f else 0.18f)
 
             // rails with end + center notches
             canvas.drawLine(cx - half, cy, cx + half, cy, hair)
@@ -1602,14 +2058,14 @@ class PlayerActivity : Activity(), SensorEventListener {
 
             mono.textSize = 11 * d
             canvas.drawText(
-                "yaw %+04.0f°   pitch %+04.0f°".format(yaw, pitch),
+                "偏航 %+04.0f°   俯仰 %+04.0f°".format(yaw, pitch),
                 cx, cy + half + 26 * d, mono
             )
             // clears the ✕ button above it (top-center, 36dp tall plus its margin)
             mono.textSize = 10 * d
             canvas.drawText(
-                "swipe — look · double tap — gyro · hold — recenter",
-                cx, 60 * d, mono
+                "滑动调整视角 · 双击切换陀螺仪 · 长按回正",
+                cx, (if (portrait) 90 else 60) * d, mono
             )
         }
     }
@@ -1654,6 +2110,13 @@ class PlayerActivity : Activity(), SensorEventListener {
 
     override fun onResume() {
         super.onResume()
+        lifecyclePaused = false
+        if (!rotationObserverRegistered) {
+            contentResolver.registerContentObserver(android.provider.Settings.System.getUriFor(
+                android.provider.Settings.System.ACCELEROMETER_ROTATION), false, rotationSettingObserver)
+            rotationObserverRegistered = true
+        }
+        syncSystemRotation()
         glView.onResume()
         val sm = getSystemService(SENSOR_SERVICE) as SensorManager
         val sensor = sm.getDefaultSensor(Sensor.TYPE_GAME_ROTATION_VECTOR)
@@ -1661,9 +2124,22 @@ class PlayerActivity : Activity(), SensorEventListener {
         sensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         handler.post(progressTick)
         fullscreenOverCutout()
+        if (restartHead && glassesDisplay != null && !headMode) {
+            restartHead = false
+            toggleHead()
+        }
     }
 
     override fun onPause() {
+        restorePlaying = player?.playWhenReady ?: restorePlaying
+        lifecyclePaused = true
+        restartHead = headMode
+        cancelHoldPlayback()
+        physicalRotation.disable()
+        if (rotationObserverRegistered) {
+            contentResolver.unregisterContentObserver(rotationSettingObserver)
+            rotationObserverRegistered = false
+        }
         super.onPause()
         rememberPosition()
         handler.removeCallbacks(progressTick)
@@ -1723,14 +2199,16 @@ class PlayerActivity : Activity(), SensorEventListener {
     companion object {
         /** Ambient glow dim factors; index 0 is off. Testers asked for brighter than one fixed level. */
         private val AMBIENT_STEPS = floatArrayOf(0f, 0.45f, 0.8f, 1.2f)
-        private val AMBIENT_NAMES = arrayOf("off", "soft", "medium", "bright")
+        private val AMBIENT_NAMES = arrayOf("关闭", "柔和", "适中", "明亮")
     }
 
     override fun onDestroy() {
+        cancelHoldPlayback()
         super.onDestroy()
-        (getSystemService(DISPLAY_SERVICE) as DisplayManager)
-            .unregisterDisplayListener(displayListener)
+        if (::outputWatcher.isInitialized) outputWatcher.close()
+        outputWindow?.close()
         headTracker?.stop()
+        presentation?.setOnDismissListener(null)
         presentation?.dismiss()
         player?.release()
         videoSurface?.release()

@@ -20,8 +20,8 @@ android {
         applicationId "com.neoxr.player"
         minSdk 26
         targetSdk 34
-        versionCode 6
-        versionName "1.5"
+        versionCode 7
+        versionName "1.6.0-community.1"
 
         // the FFmpeg decoders ship a native lib per ABI; phones that can drive
         // glasses over USB-C DisplayPort are all arm64, so the rest is dead weight
@@ -56,6 +56,10 @@ android {
         jvmTarget = '17'
     }
 
+    testOptions {
+        unitTests.includeAndroidResources = true
+    }
+
     // sideloaded by hand — a recognizable file name beats "app-debug.apk"
     applicationVariants.all { variant ->
         variant.outputs.all {
@@ -63,6 +67,15 @@ android {
         }
     }
 }
+
+// Ship the upstream license and this fork's attribution with every APK.
+def prepareLegalAssets = tasks.register('prepareLegalAssets', Copy) {
+    from rootProject.file('LICENSE')
+    from rootProject.file('NOTICE.md')
+    into layout.buildDirectory.dir('generated/legalAssets')
+}
+android.sourceSets.main.assets.srcDir(layout.buildDirectory.dir('generated/legalAssets'))
+tasks.named('preBuild').configure { dependsOn prepareLegalAssets }
 
 dependencies {
     implementation 'com.google.android.material:material:1.12.0'
@@ -79,5 +92,7 @@ dependencies {
     implementation 'eu.agno3.jcifs:jcifs-ng:2.1.10'
 
     testImplementation 'junit:junit:4.13.2'
+    testImplementation 'com.squareup.okhttp3:mockwebserver:4.12.0'
     testImplementation 'org.json:json:20240303'
+    testImplementation 'org.robolectric:robolectric:4.17'
 }

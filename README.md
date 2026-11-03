@@ -1,4 +1,26 @@
-# NeoXR
+# NeoXR Community Fork / NeoXR 社区二开版
+
+**当前版本：`1.6.0-community.1`（versionCode `7`），发布日期：2026-11-04。**
+
+本项目由 [wayhine](https://github.com/wayhine) 维护，基于
+[NeoXR-app/NeoXR](https://github.com/NeoXR-app/NeoXR) 1.5 二次开发，
+属于非官方社区发行版。上游基线提交为
+[`22e3234`](https://github.com/NeoXR-app/NeoXR/commit/22e3234fa479c54071e662a10b1827b294821510)。
+
+原项目及原有代码、素材的版权归原作者与相应贡献者所有；二开新增与修改部分的
+权利归相应贡献者所有。完整保留上游 [GPL-3.0 许可证](LICENSE)，
+本二开版本继续按该许可证发布。详见[版权与权益说明](NOTICE.md)和[版本变更](CHANGELOG.md)。
+
+本版增加本地、SMB、WebDAV 缩略图媒体库，文件夹浏览与排序，中文界面，
+最高 6× 长按倍速，进度／音量／亮度手势和横竖屏控制，并修复眼镜窗口交接与显示恢复。
+完整功能说明与[下载发布页](https://github.com/wayhine/NeoXR/releases)见下方。
+下方演示视频和截图沿用上游素材，界面与本社区版本可能有所不同。
+
+This is an unofficial community fork maintained by wayhine, based on NeoXR 1.5.
+Upstream authors retain their rights to the original work; changes remain under GPL-3.0.
+See [NOTICE.md](NOTICE.md) for attribution and [CHANGELOG.md](CHANGELOG.md) for this fork's changes.
+
+## Upstream project and features
 
 A small VR video player for XREAL glasses.
 
@@ -6,6 +28,11 @@ Plug the glasses into your phone. The video plays **on the glasses** at their na
 resolution, and the phone becomes a remote control with a touchpad. NeoXR plays
 180° and 360° video, side-by-side and over-under 3D, local files, and video from
 sites that serve a [DeoVR JSON API](https://deovr.com/app/doc) feed.
+
+This fork includes saved local / SMB / WebDAV libraries with thumbnails, folder
+views and sorting. See [library browsing](docs/library-browsing.md),
+[playback controls](docs/playback-controls.md), and
+[XREAL 1S output / tracking troubleshooting](docs/xreal-1s.md).
 
 ## Demo
 
@@ -23,8 +50,8 @@ Left: what you see in the glasses. Right: the phone acting as the remote.
 |---|---|---|
 | <img src="docs/screenshots/01-main-menu.jpg" width="220"> | <img src="docs/screenshots/02-video-list.jpg" width="220"> | <img src="docs/screenshots/04-player-remote.jpg" width="220"> |
 
-Without glasses the video stays on the phone as a split SBS pair, for the glasses'
-mirroring mode:
+Playback starts in single-view. The output button can enable SBS for the glasses'
+3D mode; the screenshot below shows the optional SBS layout on the phone:
 
 <p align="center">
   <img src="docs/screenshots/05-sbs-on-phone.jpg" width="640" alt="Split SBS view on the phone">
@@ -93,15 +120,27 @@ add this repository URL and it will follow new releases.
 1. Connect the glasses to your phone with a USB-C cable.
 2. Open NeoXR. The menu appears in the glasses; the phone shows the touchpad.
 3. Add a video source:
-   - **A site feed** — type a site address in the input field and press Add (or Done
+   - **A site feed** — select *Web / SMB*, type a site address and press Add (or Done
      on the keyboard). If the site serves a DeoVR JSON API feed, you get a video
      list with previews. If it does not, the site opens in the built-in browser.
    - **A local file** — press *Open File* and pick a video from your phone. NeoXR
      also appears in the system *Open with* and *Share* menus.
+   - **A local library** — select *Local Library*, then *Manage → Add Folder*. Choose a folder on the phone
+     and allow access. Its videos and subfolders are indexed and saved. Preview
+     cards with titles and durations appear directly on the home screen; filter by
+     folder and search titles there. *Web / SMB* shows saved websites and SMB shares.
+     The library returns on the next launch and updates in the background.
+     *Manage* contains *Rescan All* and the saved folder list, where *Remove*
+     forgets an individual root without deleting files. See [library details](docs/local-library.md).
    - **A network share** — type `smb://user:password@192.168.1.10` in the same input
-     field (or `smb://192.168.1.10` for a guest share) and press Add. Tapping it
-     browses the server: shares, then folders, then videos, played straight over the
-     network.
+     field (or `smb://192.168.1.10` for a guest share) and press Add. Tap the device,
+     then *Manage → Add Folder*, choose a shared directory and press *Add This Folder*.
+     Its saved network library displays preview cards, folder filters and title
+     search; videos stream directly over SMB. See [network library details](docs/network-library.md).
+   - **WebDAV** — select *网站 / 网络 → 添加 WebDAV 媒体库*, enter the HTTP(S)
+     directory address and optional account, then choose *添加此目录*. Saved libraries,
+     thumbnails, search and direct playback use the same flow as SMB.
+     See the [WebDAV setup guide](docs/webdav.md) for supported authentication and server requirements.
    - **From the browser** — play a video on any site, then press **▶ Play VR** to
      open that stream in the VR player.
 
@@ -121,8 +160,18 @@ In the player:
 | Action | Result |
 |---|---|
 | Swipe | Look around |
-| Long press | Center the view |
+| Hold the phone video | Temporary configured 1.5–6× speed; release to restore |
+| Center button | Center the view |
+| Hold the blank glasses controller pad | Center the view |
 | Double tap | Phone gyroscope on or off |
+
+**Controls** selects the phone swipe mode (look around or preview-and-seek) and
+the hold speed (Off, 1.5×, 2×, 3×, 4×, 5× or 6×). These choices are saved.
+**Controls / Center / ✕** share the top action row.
+
+With glasses connected, the phone has a permanent transport row: **−10s**, **Play /
+Pause**, **+15s** and **Hold speed**. The speed hold restores on release,
+cancellation and app/display transitions. See [playback controls](docs/playback-controls.md).
 | Tap (without glasses) | Show or hide the controls |
 
 The player has two button columns. **Screen** sets the shape: Flat, Wide, 180°,
@@ -206,7 +255,7 @@ profile settings).
 ## Build from source
 
 ```bash
-git clone https://github.com/NeoXR-app/NeoXR.git
+git clone https://github.com/wayhine/NeoXR.git
 cd NeoXR
 ./gradlew assembleDebug
 # APK: app/build/outputs/apk/debug/NeoXR.apk
@@ -233,3 +282,8 @@ Audio decoding for formats Android does not cover uses
 
 [GPL-3.0](LICENSE). This is free software: you may use, study, share and modify it,
 and any distributed derivative must stay under the same license.
+
+The original NeoXR copyright and license notices are preserved. This fork's
+modifications, maintainer and modification date are documented in [NOTICE.md](NOTICE.md).
+The APK includes the full license and attribution; the license is also available
+at the end of the in-app Help page. No upstream or hardware-vendor endorsement is implied.

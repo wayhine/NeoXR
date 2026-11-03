@@ -30,7 +30,7 @@ object Smb {
     fun isSmb(url: String) = url.startsWith(SCHEME, ignoreCase = true)
 
     /** A share, folder or file inside the browsed location. */
-    data class Entry(val name: String, val isDir: Boolean, val size: Long)
+    data class Entry(val name: String, val isDir: Boolean, val size: Long, val modified: Long = 0, val isLink: Boolean = false, val created: Long = 0)
 
     /**
      * Containers the player can open. A share is somebody's whole disk — listing the
@@ -88,7 +88,7 @@ object Smb {
                 refused = e
             }
         }
-        throw refused ?: IOException("SMB: no way to log in")
+        throw refused ?: IOException("SMB 登录失败")
     }
 
     /**
@@ -98,12 +98,12 @@ object Smb {
      */
     fun explain(e: Throwable): String = when {
         e is SmbAuthException ->
-            "Login refused. Put the account in the address — smb://user:password@host — " +
-                    "and on macOS tick that account in File Sharing ▸ Options ▸ SMB."
-        e is java.net.UnknownHostException -> "Host not found: ${e.message}"
+            "登录被拒绝。请在地址中填写账号：smb://用户名:密码@主机；" +
+                    "macOS 还需在“文件共享 → 选项 → SMB”中启用该账号。"
+        e is java.net.UnknownHostException -> "找不到主机：${e.message}"
         e.message?.contains("timed out", true) == true ->
-            "No answer from the server. Same network? Sharing on?"
-        else -> e.message ?: e.javaClass.simpleName
+            "服务器未响应，请确认处于同一网络且已启用文件共享。"
+        else -> (e.message ?: e.javaClass.simpleName).replace(Regex("(?i)smb://[^/\\s]+@"), "smb://")
     }
 
     /**
@@ -111,13 +111,18 @@ object Smb {
      * deeper enumerates a directory. Blocking — call it off the main thread.
      */
     fun list(url: String): List<Entry> = withAuth(url) { ctx ->
-        SmbFile(if (url.endsWith("/")) url else "$url/", ctx).listFiles()
+        SmbFile(if (url.endsWith("/")) url else "$url/", ctx).use { directory -> directory.listFiles()
             // attributes come from the listing itself, so this costs no extra round trip
-            .map { Entry(it.name.trimEnd('/'), it.name.endsWith("/"), runCatching { it.length() }.getOrDefault(0L)) }
+            .map { file -> file.use {
+                Entry(it.name.trimEnd('/'), it.name.endsWith("/"), runCatching { it.length() }.getOrDefault(0L),
+                    runCatching { it.lastModified() }.getOrDefault(0L), runCatching { it.attributes and 0x400 != 0 }.getOrDefault(false),
+                    runCatching { it.createTime() }.getOrDefault(0L))
+            } }
             // hidden entries and admin shares (IPC$, print$) are never what a viewer wants
             .filter { !it.name.startsWith(".") && !it.name.endsWith("$") }
             .filter { it.isDir || isVideo(it.name) }
             .sortedWith(compareByDescending<Entry> { it.isDir }.thenBy { it.name.lowercase() })
+        }
     }
 
     /** The location one level up, or null at the server root. */
@@ -130,11 +135,39 @@ object Smb {
 
     /** Host and path without the credentials — what to put in a title bar. */
     fun display(url: String): String {
-        val u = Uri.parse(url)
-        return (u.host ?: "") + (u.path ?: "")
+        val slash = url.indexOf('/', SCHEME.length)
+        val end = if (slash < 0) url.length else slash
+        return url.substring(SCHEME.length, end).substringAfterLast('@') +
+            if (slash < 0) "" else url.substring(slash)
     }
 
+    // jcifs-ng's URL handler consumes literal SMB names and does not percent-decode paths.
     fun child(url: String, name: String) = url.trimEnd('/') + "/" + name
+
+    /** Includes the account for connection isolation; callers display only [display]. */
+    fun device(url: String): String {
+        require(isSmb(url))
+        val authority = url.substring(SCHEME.length).substringBefore('/')
+        require(authority.isNotBlank())
+        return "$SCHEME$authority/"
+    }
+
+    fun isFolder(url: String) = url.trimEnd('/') != device(url).trimEnd('/')
+
+    fun scan(root: String, listing: (String) -> List<Entry> = ::list): List<LibraryVideo> {
+        require(isFolder(root)) { "请先选择共享或文件夹" }
+        return LocalLibrary.scan(root.trimEnd('/')) { directory ->
+            listing(directory).filterNot { it.isDir && it.isLink }.map { entry ->
+                val url = child(directory, entry.name)
+                LibraryDocument(url, entry.name, if (isVideo(entry.name)) "video/*" else null,
+                    url, entry.isDir, entry.size, entry.modified, entry.created)
+            }
+        }
+    }
+
+    fun openRandomAccess(url: String): jcifs.SmbRandomAccess = withAuth(url) { ctx ->
+        SmbFile(url, ctx).use { it.openRandomAccess("r") }
+    }
 
     /**
      * Reads a share over SMB for the player. Random access, so seeking works the

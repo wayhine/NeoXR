@@ -71,23 +71,29 @@ class VrRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
     @Volatile var fovDeg = 72f
 
     /**
-     * Draw one full-screen view instead of the stereo pair. Only useful when the
-     * video plays on the phone itself: without glasses to merge the halves, a single
-     * view is what you actually want to look at (and what makes a readable
-     * screenshot).
+     * Draw one full-screen eye view instead of the stereo pair, on the phone or
+     * an external display in 2D mode. The source can still be SBS / TB VR video.
      */
     @Volatile var monoOutput = false
+        set(value) {
+            if (field != value) { field = value; meshDirty = true }
+        }
+
+    @Volatile var stereoOutputAspect = 16f / 9f
+        set(value) {
+            if (value.isFinite() && value > 0 && field != value) { field = value; meshDirty = true }
+        }
 
     /** Some sites publish the SBS halves in R|L order — swap which half goes to which eye. */
     @Volatile var swapEyes = false
 
     /**
-     * Aspect of one eye's image (frame aspect corrected for the stereo layout), or 0
-     * while unknown. The flat screen uses it to keep the picture's proportions
+     * Display aspect of the full decoded frame, or 0 while unknown. The flat mono
+     * screen uses it to keep the picture's proportions
      * instead of stretching it to the viewport — which also creates the surround the
      * ambient backdrop fills.
      */
-    @Volatile private var videoAspect = 0f
+    @Volatile private var frameAspect = 0f
 
     @Volatile private var screenAngle = 180
     @Volatile private var stereoMode = "sbs"
@@ -110,11 +116,11 @@ class VrRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
      * be displayed. Letterboxing by that number squashed 3D video into a small square
      * (SBS) or a flattened strip (OU).
      */
-    fun setVideoSize(w: Int, h: Int) {
+    fun setVideoSize(w: Int, h: Int, pixelRatio: Float = 1f) {
         if (w <= 0 || h <= 0) return
-        val a = if (stereoMode == "off") w.toFloat() / h else 0f
-        if (Math.abs(a - videoAspect) > 0.001f) {
-            videoAspect = a
+        val a = VideoGeometry.aspect(w, h, pixelRatio)
+        if (Math.abs(a - frameAspect) > 0.001f) {
+            frameAspect = a
             meshDirty = true
         }
     }
@@ -227,6 +233,7 @@ class VrRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
         width = w
         height = h
+        meshDirty = true
     }
 
     override fun onFrameAvailable(surfaceTexture: SurfaceTexture?) {
@@ -321,12 +328,10 @@ class VrRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
             if (screenAngle == 0) {
                 Matrix.setIdentityM(mvp, 0) // flat: screen-locked, no look-around
             } else {
-                // aspect is the GLASSES PANEL's (16:9), not the viewport's: the panel
-                // shows the stretched half, so using the viewport aspect here renders
-                // every dome too wide (~1.6x on a 20:9 phone). Flat mode is immune —
-                // there the frame fractions cancel the stretch exactly.
-                // ponytail: 16:9 hardcoded for Xreal One; a setting if glasses differ.
-                Matrix.perspectiveM(proj, 0, fovDeg, 16f / 9f, 0.1f, 100f)
+                // Single-view phone output uses the actual drawable aspect in either
+                // orientation. SBS output is stretched to the glasses' 16:9 eye panel.
+                Matrix.perspectiveM(proj, 0, fovDeg,
+                    VideoGeometry.outputAspect(width, height, monoOutput, stereoOutputAspect), 0.1f, 100f)
                 Matrix.setIdentityM(view, 0)
                 Matrix.rotateM(view, 0, -pitchDeg, 1f, 0f, 0f)
                 Matrix.rotateM(view, 0, -yawDeg, 0f, 1f, 0f)
@@ -358,15 +363,16 @@ class VrRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
     private fun buildMesh() {
         if (screenAngle == 0) {
             // Screen-locked flat quad in NDC. Sized to the frame's own aspect against
-            // the 16:9 eye panel, so a 4:3 or scope picture keeps its proportions
+            // the current output, so a portrait, 4:3 or scope picture keeps its proportions
             // instead of being stretched to fill; the leftover bands are what the
             // ambient backdrop lights up. Falls back to fullscreen until the decoder
             // reports a size.
             var sx = 1f
             var sy = 1f
-            if (videoAspect > 0f) {
-                val panel = 16f / 9f
-                if (videoAspect > panel) sy = panel / videoAspect else sx = videoAspect / panel
+            if (stereoMode == "off") {
+                val fit = VideoGeometry.fit(frameAspect, VideoGeometry.outputAspect(width, height, monoOutput, stereoOutputAspect))
+                sx = fit.first
+                sy = fit.second
             }
             if (ambient) { sx *= ambientInset; sy *= ambientInset }
             flatHalfX = sx

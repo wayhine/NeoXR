@@ -1,10 +1,9 @@
 <?xml version="1.0" encoding="utf-8"?>
 <merge xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- two containers: landscape keeps everything in rowMain (single storey, the
-         SBS overlay depends on that bar depth); portrait remote moves play/3D/
-         quality into rowTop programmatically (applyRemoteDims) so the seek bar
-         gets the full width below -->
+    <!-- Phone playback keeps the compact rowMain. Remote playback moves transport
+         into quickControls; portrait moves tuning into rowTop so seeking keeps
+         the full width below. -->
     <LinearLayout
         android:id="@+id/controlsBar"
         android:layout_width="match_parent"
@@ -20,6 +19,40 @@
         android:paddingTop="4dp"
         android:paddingBottom="4dp"
         android:visibility="gone">
+
+    <!-- Remote mode moves the existing rewind/play/forward buttons into this row. -->
+    <LinearLayout
+        android:id="@+id/quickControls"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/btnHoldSpeed"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_input"
+            android:contentDescription="@string/hold_speed_description"
+            android:gravity="center"
+            android:text="@string/hold_speed_default"
+            android:textColor="@color/on_surface"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/btnCenter"
+            android:layout_width="0dp"
+            android:layout_height="48dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_input"
+            android:contentDescription="@string/center_description"
+            android:gravity="center"
+            android:text="@string/center"
+            android:textColor="@color/on_surface"
+            android:textSize="11sp" />
+    </LinearLayout>
 
     <FrameLayout
         android:id="@+id/rowTop"
@@ -108,7 +141,7 @@
             android:layout_height="wrap_content"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:padding="10dp"
-            android:text="3D"
+            android:text="@string/stereo_settings"
             android:textColor="@color/primary"
             android:textSize="14sp" />
 
@@ -119,7 +152,7 @@
             android:layout_height="wrap_content"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:padding="10dp"
-            android:text="CC"
+            android:text="@string/subtitles"
             android:textColor="@color/primary"
             android:textSize="14sp"
             android:visibility="gone" />
@@ -132,7 +165,7 @@
             android:layout_height="wrap_content"
             android:background="?android:attr/selectableItemBackgroundBorderless"
             android:padding="10dp"
-            android:text="PIC"
+            android:text="@string/picture"
             android:textColor="@color/primary"
             android:textSize="14sp" />
 
@@ -149,11 +182,89 @@
     </LinearLayout>
     </LinearLayout>
 
+    <LinearLayout
+        android:id="@+id/playerActions"
+        android:layout_width="wrap_content"
+        android:layout_height="36dp"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="8dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:visibility="gone">
+
+        <TextView
+            android:id="@+id/btnOrientation"
+            android:layout_width="52dp"
+            android:layout_height="match_parent"
+            android:layout_marginEnd="6dp"
+            android:background="@drawable/bg_input"
+            android:contentDescription="@string/orientation_description"
+            android:gravity="center"
+            android:text="@string/orientation"
+            android:textColor="@color/on_surface"
+            android:textSize="11sp" />
+
+        <TextView
+            android:id="@+id/btnGestureSettings"
+            android:layout_width="64dp"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_input"
+            android:contentDescription="@string/gesture_settings_description"
+            android:gravity="center"
+            android:text="@string/gesture_settings"
+            android:textColor="@color/on_surface"
+            android:textSize="11sp" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/speedIndicator"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|center_horizontal"
+        android:layout_marginTop="96dp"
+        android:background="@drawable/bg_badge"
+        android:padding="10dp"
+        android:text="@string/speed_indicator_default"
+        android:textColor="@color/on_surface"
+        android:textSize="14sp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/swipeSeekPreview"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:background="@drawable/bg_badge"
+        android:gravity="center"
+        android:padding="14dp"
+        android:textColor="@color/on_surface"
+        android:textSize="18sp"
+        android:visibility="gone" />
+
+    <ScrollView
+        android:id="@+id/gestureSettings"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:layout_marginStart="16dp"
+        android:layout_marginEnd="16dp"
+        android:background="@drawable/bg_input"
+        android:padding="12dp"
+        android:scrollbars="none"
+        android:visibility="gone">
+
+        <LinearLayout
+            android:id="@+id/gestureSettingsRows"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical" />
+    </ScrollView>
+
     <!-- stereo + geometry tuning: opened by the 3D button; buttons are huge on
          purpose — the whole overlay is drawn 2x squeezed for the glasses, small
          targets are unhittable. Two rows: convergence/eye-swap, then the vertical
          squeeze (the side columns have no height budget left for it) -->
-    <LinearLayout
+    <ScrollView
         android:id="@+id/eyePanel"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
@@ -162,8 +273,13 @@
         android:layout_marginEnd="112dp"
         android:layout_marginBottom="76dp"
         android:background="@drawable/bg_input"
-        android:orientation="vertical"
+        android:scrollbars="none"
         android:visibility="gone">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
 
     <LinearLayout
         android:layout_width="match_parent"
@@ -188,7 +304,7 @@
             android:gravity="center"
             android:paddingStart="20dp"
             android:paddingEnd="20dp"
-            android:text="3D"
+            android:text="@string/depth"
             android:textColor="@color/on_surface_variant"
             android:textSize="16sp" />
 
@@ -241,7 +357,7 @@
             android:layout_weight="1.4"
             android:fontFamily="monospace"
             android:gravity="center"
-            android:text="W 100"
+            android:text="@string/width_default"
             android:textColor="@color/on_surface_variant"
             android:textSize="14sp" />
 
@@ -265,7 +381,7 @@
         android:layout_height="52dp"
         android:background="?android:attr/selectableItemBackground"
         android:gravity="center"
-        android:text="Output: stereo pair"
+        android:text="@string/stereo_output_default"
         android:textColor="@color/on_surface_variant"
         android:textSize="13sp"
         android:visibility="gone" />
@@ -278,7 +394,7 @@
         android:layout_height="52dp"
         android:background="?android:attr/selectableItemBackground"
         android:gravity="center"
-        android:text="Ambient glow: off"
+        android:text="@string/ambient_default"
         android:textColor="@color/on_surface_variant"
         android:textSize="13sp" />
 
@@ -306,7 +422,7 @@
             android:layout_weight="1.4"
             android:fontFamily="monospace"
             android:gravity="center"
-            android:text="H 100"
+            android:text="@string/height_default"
             android:textColor="@color/on_surface_variant"
             android:textSize="14sp" />
 
@@ -322,6 +438,7 @@
             android:textSize="24sp" />
     </LinearLayout>
     </LinearLayout>
+    </ScrollView>
 
     <!-- subtitles are drawn here, not by the player: the video goes to a GL texture,
          so ExoPlayer's own subtitle view would never reach the glasses. Sitting in
@@ -350,7 +467,7 @@
 
         <LinearLayout
             android:id="@+id/trackList"
-            android:layout_width="wrap_content"
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:orientation="vertical" />
     </ScrollView>

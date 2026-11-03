@@ -37,7 +37,7 @@ class WebViewActivity : Activity() {
     private companion object {
         // what the site is told it is talking to (User-Agent); labelled "View" in the UI
         // because the visible effect is which version of the site comes back
-        val UA_NAMES = listOf("Phone", "Quest 3", "Desktop")
+        val UA_NAMES = listOf("手机", "Quest 3", "电脑")
         val UA_STRINGS = listOf(
             null, // WebView default
             "Mozilla/5.0 (X11; Linux x86_64; Quest 3) AppleWebKit/537.36 (KHTML, like Gecko) " +
@@ -170,7 +170,7 @@ class WebViewActivity : Activity() {
                     // a silently black page is undiagnosable — surface main-frame failures
                     // only, sub-resource errors are noise
                     if (failingUrl == view?.url) {
-                        Toast.makeText(this@WebViewActivity, "Page error: $description", Toast.LENGTH_LONG).show()
+                        Toast.makeText(this@WebViewActivity, "页面加载失败：$description", Toast.LENGTH_LONG).show()
                     }
                 }
             }
@@ -201,11 +201,16 @@ class WebViewActivity : Activity() {
             // phone becomes a touchpad controller with a cursor. The on-page overlay
             // buttons are dead weight there — hide them and move their jobs to the
             // controller strip.
-            val out = GlassesOut(this, glasses, rootView())
+            val out = GlassesOut(this, glasses, rootView()) {
+                glassesOut = null
+                leftBar.visibility = View.VISIBLE
+                rightBar.visibility = View.VISIBLE
+                setContentView(rootView())
+            }
             glassesOut = out
             leftBar.visibility = View.GONE
             rightBar.visibility = View.GONE
-            ctrlVr = GlassesOut.stripButton(this, "▶︎ Play VR") {
+            ctrlVr = GlassesOut.stripButton(this, "▶ VR播放") {
                 stream?.let {
                     startActivity(Intent(this, PlayerActivity::class.java).putExtra("stream", it))
                 }
@@ -264,15 +269,15 @@ class WebViewActivity : Activity() {
         }
         frame.addView(leftBar)
 
-        btnVr = bar("▶ VR") {
+        btnVr = bar("▶ VR播放") {
             stream?.let {
                 startActivity(Intent(this, PlayerActivity::class.java).putExtra("stream", it))
             }
         }
         btnVr.visibility = View.GONE
-        btnUa = bar("View: ${UA_NAMES[uaIndex]}") {
+        btnUa = bar("视图：${UA_NAMES[uaIndex]}") {
             cycleUa()
-            btnUa.text = "View: ${UA_NAMES[uaIndex]}"
+            btnUa.text = "视图：${UA_NAMES[uaIndex]}"
         }
         rightBar = LinearLayout(this).apply {
             orientation = LinearLayout.HORIZONTAL
@@ -287,6 +292,22 @@ class WebViewActivity : Activity() {
         }
         frame.addView(rightBar)
 
+        // Chinese labels and larger system fonts can exceed one toolbar row on a
+        // narrow phone. Keep both groups reachable by moving the right group down.
+        val arrangeBars = View.OnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+            val gapPx = (8 * resources.displayMetrics.density).toInt()
+            val stacked = leftBar.width + rightBar.width + gapPx > frame.width
+            val top = if (stacked) leftBar.height + gapPx else 0
+            val lp = rightBar.layoutParams as FrameLayout.LayoutParams
+            if (lp.topMargin != top) {
+                lp.topMargin = top
+                rightBar.layoutParams = lp
+            }
+        }
+        frame.addOnLayoutChangeListener(arrangeBars)
+        leftBar.addOnLayoutChangeListener(arrangeBars)
+        rightBar.addOnLayoutChangeListener(arrangeBars)
+
         frame.sbs = prefs.getBoolean("menuSbs", false)
         frame.onLongPressToggle = {
             frame.sbs = !frame.sbs
@@ -298,8 +319,8 @@ class WebViewActivity : Activity() {
     private fun cycleUa() {
         uaIndex = (uaIndex + 1) % UA_STRINGS.size
         web.settings.userAgentString = UA_STRINGS[uaIndex]
-        btnUa.text = "View: ${UA_NAMES[uaIndex]}"
-        Toast.makeText(this, "Loading the ${UA_NAMES[uaIndex]} version", Toast.LENGTH_SHORT).show()
+        btnUa.text = "视图：${UA_NAMES[uaIndex]}"
+        Toast.makeText(this, "正在加载${UA_NAMES[uaIndex]}版页面", Toast.LENGTH_SHORT).show()
         web.reload()
     }
 
@@ -318,7 +339,7 @@ class WebViewActivity : Activity() {
         web.setInitialScale(zoom)
         web.evaluateJavascript(shrinkJs(zoom), null)
         web.zoomBy(zoom.toFloat() / was)
-        Toast.makeText(this, "Scale $zoom%", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, "页面缩放 $zoom%", Toast.LENGTH_SHORT).show()
     }
 
     private fun cycleZoom() =
@@ -338,6 +359,7 @@ class WebViewActivity : Activity() {
     private fun bar(label: String, wide: Boolean = false, onClick: () -> Unit) = TextView(this).apply {
         text = label
         textSize = if (wide) 15f else 10f
+        maxLines = 1
         gravity = Gravity.CENTER
         minWidth = ((if (wide) 60 else 34) * resources.displayMetrics.density).toInt()
         minHeight = ((if (wide) 44 else 32) * resources.displayMetrics.density).toInt()

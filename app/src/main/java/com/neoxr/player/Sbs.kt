@@ -6,6 +6,7 @@ import android.graphics.Canvas
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.SystemClock
+import android.view.Display
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
@@ -170,10 +171,7 @@ class SbsFrameLayout(context: Context) : FrameLayout(context) {
             activity.layoutInflater.inflate(layoutRes, wrap, true)
             wrap.sbs = prefs.getBoolean("menuSbs", false)
             val glasses = Glasses.find(activity)
-            val out = glasses?.let { GlassesOut(activity, it, wrap) }?.takeIf { !it.failed }
-            if (out != null) {
-                activity.setContentView(GlassesOut.controller(activity, out, controllerExtras))
-            } else {
+            fun showOnPhone(failedDisplay: Display? = null) {
                 // no glasses, or the display refused the presentation (a stale
                 // display entry, or one the app may not draw on): keep everything
                 // on the phone rather than crashing
@@ -182,28 +180,23 @@ class SbsFrameLayout(context: Context) : FrameLayout(context) {
                     prefs.edit().putBoolean("menuSbs", wrap.sbs).apply()
                 }
                 activity.setContentView(wrap)
-                watchForGlasses(activity)
+                watchForGlasses(activity, failedDisplay)
             }
+            val out = glasses?.let { display -> GlassesOut(activity, display, wrap) { showOnPhone(display) } }
+            if (out != null) activity.setContentView(GlassesOut.controller(activity, out, controllerExtras))
+            else showOnPhone()
             return wrap
         }
 
         /** Recreates the activity when glasses get plugged in, moving content to them. */
-        private fun watchForGlasses(activity: Activity) {
-            val dm = activity.getSystemService(Context.DISPLAY_SERVICE) as DisplayManager
-            val listener = object : DisplayManager.DisplayListener {
-                override fun onDisplayAdded(displayId: Int) {
-                    if (Glasses.find(activity) != null && !activity.isDestroyed) activity.recreate()
-                }
-
-                override fun onDisplayRemoved(displayId: Int) {}
-                override fun onDisplayChanged(displayId: Int) {}
-            }
-            dm.registerDisplayListener(listener, null)
+        private fun watchForGlasses(activity: Activity, initial: Display? = null) {
+            // A failed presentation falls back after onResume, so its watcher is already active.
+            val watcher = GlassesWatcher(activity, initial, initiallyResumed = initial != null) { activity.recreate() }
             activity.window.decorView.addOnAttachStateChangeListener(
                 object : View.OnAttachStateChangeListener {
                     override fun onViewAttachedToWindow(v: View) {}
                     override fun onViewDetachedFromWindow(v: View) =
-                        dm.unregisterDisplayListener(listener)
+                        watcher.close()
                 })
         }
     }

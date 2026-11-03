@@ -37,6 +37,9 @@ data class VideoInfo(
 
 object Deo {
 
+    /** Typed separately so retry behavior never depends on a translated message. */
+    class PremiumVideoException : IllegalArgumentException("此视频需要订阅后播放")
+
     /** Server answered but refused us — the site itself is alive (browsable). */
     class HttpException(code: Int, url: String) : Exception("HTTP $code: $url")
 
@@ -71,11 +74,12 @@ object Deo {
     /** Adds https:// if missing; the path is kept exactly as the user typed it. */
     fun normalizeSiteUrl(input: String): String {
         var u = input.trim()
-        require(u.isNotEmpty()) { "empty url" }
+        require(u.isNotEmpty()) { "地址不能为空" }
+        if (WebDav.isWebDav(u)) return WebDav.connection(u)
         // network shares keep their scheme: java.net.URL has no handler for smb://
         // and would reject a perfectly good address
         if (u.startsWith("smb://", ignoreCase = true)) {
-            require(u.length > 6) { "empty host" }
+            require(u.length > 6) { "服务器地址不能为空" }
             return u
         }
         if (!u.contains("://")) u = "https://$u"
@@ -92,7 +96,7 @@ object Deo {
             val s = scenes.getJSONObject(i)
             val list = s.optJSONArray("list") ?: JSONArray()
             Scene(
-                s.optString("name", "Scene ${i + 1}"),
+                s.optString("name", "分组 ${i + 1}"),
                 (0 until list.length()).map { j ->
                     val v = list.getJSONObject(j)
                     val full = v.has("screenType") || v.has("viewAngle") || v.has("is3d")
@@ -115,10 +119,8 @@ object Deo {
     fun parseVideo(json: String): VideoInfo {
         val v = JSONObject(json)
         val sources = listSources(v)
-        val picked = pickFrom(sources) ?: throw IllegalArgumentException(
-            if (v.optBoolean("isPremium")) "Premium video — subscription required"
-            else "No video sources in JSON"
-        )
+        val picked = pickFrom(sources) ?: throw if (v.optBoolean("isPremium"))
+            PremiumVideoException() else IllegalArgumentException("视频数据中没有可播放的视频源")
         return VideoInfo(v.optString("title"), picked, feedAngle(v), feedStereo(v), sources)
     }
 
@@ -157,7 +159,7 @@ object Deo {
      * then frame aspect once the decoder reports it, else the wide-SBS default of
      * intercepted cam streams. Returns angleDeg (0 = flat) to stereo ("sbs"|"tb"|"off").
      */
-    fun guessFormat(url: String, width: Int = 0, height: Int = 0): Pair<Int, String> {
+    fun guessFormat(url: String, width: Int = 0, height: Int = 0, pixelRatio: Float = 1f): Pair<Int, String> {
         // tokens must be whole delimiter-separated words: kills "3600x1800"/"h360p" false hits
         val parts = url.substringBefore('?').substringAfterLast('/').uppercase()
             .split('_', '-', '.', ' ', '(', ')').filterTo(HashSet()) { it.isNotEmpty() }
@@ -183,12 +185,14 @@ object Deo {
         if (stereo != null) return 0 to stereo // stereo tag alone = flat 3D rip
 
         if (width > 0 && height > 0) {
-            val r = width.toFloat() / height
+            val r = VideoGeometry.aspect(width, height, pixelRatio)
             return when {
+                // Portrait alone is not evidence of an over-under VR pair. Treat
+                // untagged tall clips as complete flat frames; explicit tags above win.
+                r < 1f -> 0 to "off"
                 r > 3.4f -> 0 to "sbs"            // two 16:9 eyes side by side
                 r in 1.9f..2.1f -> 180 to "sbs"   // classic 180 SBS equirect (1:1 per eye)
                 r in 0.95f..1.05f -> 180 to "sbs" // legacy anamorphic half-width 180 SBS
-                r < 0.6f -> 180 to "tb"
                 r in 1.7f..1.85f -> 90 to "sbs"   // 16:9 web streams: near-always baked wide-SBS
                 else -> 0 to "off"                // 4:3 & friends: plain 2D video
             }

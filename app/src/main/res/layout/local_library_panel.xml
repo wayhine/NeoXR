@@ -1,0 +1,215 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/libraryPanel"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical">
+
+    <LinearLayout
+        android:id="@+id/libraryControls"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <TextView
+            android:id="@+id/libraryBrowse"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:maxWidth="120dp"
+            android:background="@drawable/bg_input"
+            android:ellipsize="end"
+            android:gravity="center_vertical"
+            android:maxLines="1"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:text="@string/all_folders"
+            android:textColor="@color/on_surface"
+            android:textSize="10sp" />
+
+        <EditText
+            android:id="@+id/librarySearch"
+            android:layout_width="0dp"
+            android:layout_height="36dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_input"
+            android:hint="@string/search_titles"
+            android:imeOptions="actionSearch"
+            android:inputType="text"
+            android:maxLines="1"
+            android:paddingStart="12dp"
+            android:paddingEnd="12dp"
+            android:textColor="@color/on_surface"
+            android:textColorHint="@color/on_surface_variant"
+            android:textSize="10sp" />
+
+        <TextView
+            android:id="@+id/libraryManage"
+            android:layout_width="wrap_content"
+            android:layout_height="36dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_input"
+            android:gravity="center"
+            android:paddingStart="10dp"
+            android:paddingEnd="10dp"
+            android:text="@string/manage"
+            android:textColor="@color/on_surface"
+            android:textSize="10sp" />
+    </LinearLayout>
+
+    <LinearLayout android:layout_width="match_parent" android:layout_height="wrap_content"
+        android:layout_marginTop="8dp" android:orientation="horizontal">
+        <TextView android:id="@+id/libraryFilesView" android:layout_width="0dp"
+            android:layout_height="36dp" android:layout_weight="1" android:gravity="center"
+            android:background="@drawable/bg_input" android:text="@string/view_files"
+            android:textSize="10sp" android:textColor="@color/on_surface" />
+        <TextView android:id="@+id/libraryFolderView" android:layout_width="0dp"
+            android:layout_height="36dp" android:layout_weight="1" android:gravity="center"
+            android:layout_marginStart="4dp" android:background="@drawable/bg_input"
+            android:text="@string/view_folders" android:textSize="10sp" android:textColor="@color/on_surface" />
+        <TextView android:id="@+id/librarySort" android:layout_width="0dp"
+            android:layout_height="36dp" android:layout_weight="1.4" android:gravity="center"
+            android:layout_marginStart="8dp" android:background="@drawable/bg_input"
+            android:text="@string/library_sort" android:textSize="10sp" android:textColor="@color/on_surface" />
+    </LinearLayout>
+
+    <LinearLayout android:id="@+id/libraryLocationRow" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:layout_marginTop="8dp"
+        android:gravity="center_vertical" android:orientation="horizontal" android:visibility="gone">
+        <TextView android:id="@+id/libraryUp" android:layout_width="64dp" android:layout_height="32dp"
+            android:gravity="center" android:background="@drawable/bg_input" android:text="@string/library_up"
+            android:textSize="10sp" android:textColor="@color/on_surface" />
+        <TextView android:id="@+id/libraryLocation" android:layout_width="0dp" android:layout_height="wrap_content"
+            android:layout_weight="1" android:layout_marginStart="8dp" android:maxLines="1"
+            android:ellipsize="middle" android:textSize="10sp" android:textColor="@color/on_surface_variant" />
+    </LinearLayout>
+    <TextView android:id="@+id/librarySortInfo" android:layout_width="match_parent"
+        android:layout_height="wrap_content" android:layout_marginTop="6dp" android:visibility="gone"
+        android:textSize="9sp" android:textColor="@color/on_surface_variant" />
+
+    <TextView
+        android:id="@+id/libraryStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:textColor="@color/on_surface_variant"
+        android:textSize="10sp"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/libraryEmpty"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:paddingTop="16dp"
+        android:text="@string/library_empty"
+        android:textColor="@color/on_surface_variant"
+        android:textSize="11sp"
+        android:visibility="gone" />
+
+    <FrameLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="10dp"
+        android:layout_weight="1">
+
+        <GridView
+            android:id="@+id/libraryGrid"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:clipToPadding="false"
+            android:columnWidth="150dp"
+            android:horizontalSpacing="10dp"
+            android:numColumns="auto_fit"
+            android:paddingBottom="24dp"
+            android:scrollbars="none"
+            android:stretchMode="columnWidth"
+            android:verticalSpacing="14dp" />
+
+        <ListView android:id="@+id/librarySortMenu" android:layout_width="match_parent"
+            android:layout_height="match_parent" android:background="@drawable/bg_input"
+            android:divider="@null" android:scrollbars="none" android:visibility="gone" />
+
+        <ListView
+            android:id="@+id/libraryFolders"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_input"
+            android:divider="@null"
+            android:dividerHeight="0dp"
+            android:paddingBottom="24dp"
+            android:scrollbars="none"
+            android:visibility="gone" />
+
+        <!-- In-layout management stays visible on the glasses and in SBS mode. -->
+        <ScrollView
+            android:id="@+id/libraryManager"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:background="@drawable/bg_input"
+            android:padding="12dp"
+            android:scrollbars="none"
+            android:visibility="gone">
+
+            <LinearLayout
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:text="@string/library_folders"
+                    android:textColor="@color/on_surface"
+                    android:textSize="12sp" />
+
+                <LinearLayout
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:orientation="horizontal">
+
+                    <TextView
+                        android:id="@+id/libraryAdd"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_input"
+                        android:gravity="center"
+                        android:text="@string/add_folder"
+                        android:textColor="@color/on_surface"
+                        android:textSize="11sp" />
+
+                    <TextView
+                        android:id="@+id/libraryRefresh"
+                        android:layout_width="0dp"
+                        android:layout_height="36dp"
+                        android:layout_marginStart="8dp"
+                        android:layout_weight="1"
+                        android:background="@drawable/bg_input"
+                        android:gravity="center"
+                        android:text="@string/rescan_all"
+                        android:textColor="@color/on_surface"
+                        android:textSize="11sp" />
+                </LinearLayout>
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="10dp"
+                    android:text="@string/remove_folder_hint"
+                    android:textColor="@color/on_surface_variant"
+                    android:textSize="9sp" />
+
+                <LinearLayout
+                    android:id="@+id/libraryManageRows"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="8dp"
+                    android:orientation="vertical" />
+            </LinearLayout>
+        </ScrollView>
+
+    </FrameLayout>
+</LinearLayout>

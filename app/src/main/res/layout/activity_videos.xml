@@ -68,7 +68,7 @@
                 android:maxWidth="140dp"
                 android:paddingStart="12dp"
                 android:paddingEnd="12dp"
-                android:text="Browse"
+                android:text="@string/browse"
                 android:textColor="@color/on_surface"
                 android:textSize="10sp" />
 
@@ -79,7 +79,7 @@
                 android:layout_marginStart="8dp"
                 android:layout_weight="1"
                 android:background="@drawable/bg_input"
-                android:hint="Search titles"
+                android:hint="@string/search_titles"
                 android:imeOptions="actionSearch"
                 android:inputType="text"
                 android:maxLines="1"
@@ -141,7 +141,7 @@
         android:layout_gravity="center"
         android:layout_margin="32dp"
         android:gravity="center"
-        android:text="This feed has no videos"
+        android:text="@string/feed_empty"
         android:textColor="@color/on_surface_variant"
         android:textSize="10sp"
         android:visibility="gone" />
