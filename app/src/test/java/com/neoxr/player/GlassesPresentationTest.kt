@@ -59,17 +59,34 @@ class GlassesPresentationTest {
         player.start().resume().visible()
         shadowOf(Looper.getMainLooper()).idle()
         assertTrue(videoWindow.isShowing)
+        menu.stop()
         assertFalse(menuWindow.isShowing)
 
-        player.pause().stop().destroy()
-        menu.resume()
-        shadowOf(Looper.getMainLooper()).idle()
+        player.pause()
         assertFalse(videoWindow.isShowing)
+        menu.start().resume()
+        shadowOf(Looper.getMainLooper()).idle()
         assertTrue(menuWindow.isShowing)
+        player.stop().destroy()
+        assertFalse(videoWindow.isShowing)
         assertEquals(0, lost)
         videoOutput.close()
         menuOutput.close()
         menu.pause().stop().destroy()
+    }
+
+    @Test fun goingToTheBackgroundReleasesTheGlassesWindow() {
+        val activity = Robolectric.buildActivity(Activity::class.java).create()
+        val window = Window(activity.get(), display(activity.get()))
+        val output = GlassesPresentation(activity.get(), window, {}, { throw AssertionError(it) })
+        activity.start().resume().visible()
+        shadowOf(Looper.getMainLooper()).idle()
+        activity.pause()
+        assertFalse(window.isShowing)
+        activity.stop()
+        assertFalse(window.isShowing)
+        output.close()
+        activity.destroy()
     }
 
     @Test fun aTransientWindowRejectionRetriesWithoutRepluggingTheGlasses() {

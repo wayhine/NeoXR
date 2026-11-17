@@ -1,6 +1,6 @@
 # NeoXR 社区二开版：版权、许可与权益说明
 
-本说明适用于 **NeoXR Community Fork 1.6.0-community.4**，修改日期为 **2026-11-17**。
+本说明适用于 **NeoXR Community Fork 1.7.0**，修改日期为 **2026-11-18**。
 
 ## 来源与维护者
 
@@ -32,6 +32,7 @@ APK 同时携带 `LICENSE` 和本说明；帮助页包含项目来源、维护�
 - 中文界面、播放器手势、双指缩放、临时倍速、横竖屏切换及控制栏布局。
 - 外接眼镜的单画面／SBS 输出、页面窗口交接、断连恢复及诊断日志采集。
 - XREAL One 系列与 1S 的传感器数据读取、校验及连接恢复改进。
+- 雷鸟 GT USB 头控适配、手机独立灵敏度与朝向稳定处理，以及网络媒体库同窗口切换。
 
 具体功能与验证范围见 `CHANGELOG.md` 和 `docs/`。
 
@@ -41,7 +42,13 @@ APK 同时携带 `LICENSE` 和本说明；帮助页包含项目来源、维护�
 包括经 Jellyfin Media3 组件提供的 FFmpeg 音频解码器，其说明保留在 README 的
 Third-party components 部分。社区协议实现的资料出处保留在相关文档中。
 
-NeoXR、XREAL 及其他品牌名称、标识涉及的相关权利归各自权利人所有。
+本版本APK的雷鸟GT头控使用RayNeoXR 2.1.2中的36个`com.ffalcon.xr`封装类，
+以及`libFFalconXRServer.so`、`libFFalconXRClient.so`、`libFFalconXRConfig.so`和
+`libFFalconXRGraphic.so`。这些第三方组件的版权归相应权利人，适用许可随原组件保留，
+本项目新增的USB生命周期、姿态适配与界面代码按项目GPL-3.0许可证提供。
+运行库来源、校验值与构建步骤见`docs/rayneo-gt-head-tracking.md`。
+
+NeoXR、XREAL、RayNeo／雷鸟及其他品牌名称、标识涉及的相关权利归各自权利人所有。
 使用这些名称用于说明来源或兼容性，不表示官方关联、背书或授权。
 
 ## 担保
@@ -52,7 +59,7 @@ NeoXR、XREAL 及其他品牌名称、标识涉及的相关权利归各自权利
 ## English attribution
 
 This is an unofficial modification of NeoXR 1.5 by the community fork maintained by
-wayhine, dated 2026-11-17. The upstream project is https://github.com/NeoXR-app/NeoXR,
+wayhine, dated 2026-11-18. The upstream project is https://github.com/NeoXR-app/NeoXR,
 based on commit 22e3234fa479c54071e662a10b1827b294821510.
 
 Copyright in the original work remains with its original authors and contributors.

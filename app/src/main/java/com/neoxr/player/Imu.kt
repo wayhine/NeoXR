@@ -171,6 +171,7 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
     @Volatile private var running = false
     @Volatile private var socket: Socket? = null
     private var netCallback: ConnectivityManager.NetworkCallback? = null
+    private var rayNeo: RayNeoImu? = null
     private val fusion = Madgwick()
     private val bias = FloatArray(3)
 
@@ -190,6 +191,22 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
         active?.takeIf { it !== this }?.stop()
         active = this
         running = true
+
+        RayNeoImu.findDevice(context)?.let { device ->
+            rayNeo = RayNeoImu(context, ::status, { yaw, pitch ->
+                if (running) {
+                    yawDeg = yaw
+                    pitchDeg = pitch
+                    onOrientation?.invoke(yaw, pitch)
+                }
+            }, {
+                if (running && active === this) {
+                    running = false
+                    onStopped?.invoke()
+                }
+            }).also { it.start(device) }
+            return
+        }
 
         // Air-series glasses carry the sensor on USB HID instead of the One series'
         // TCP service — different transport, same fusion (see AirImu.kt).
@@ -430,6 +447,8 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
     fun stop() {
         running = false
         if (active === this) active = null
+        rayNeo?.stop()
+        rayNeo = null
         try { socket?.close() } catch (_: Exception) {}
         socket = null
         stopNet()

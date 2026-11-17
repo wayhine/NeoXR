@@ -1,6 +1,6 @@
 # NeoXR Community Fork / NeoXR 社区二开版
 
-**当前版本：`1.6.0-community.4`（versionCode `10`），更新日期：2026-11-17。**
+**当前版本：`1.7.0`（versionCode `11`），更新日期：2026-11-18。**
 
 本项目由 [wayhine](https://github.com/wayhine) 维护，基于
 [NeoXR-app/NeoXR](https://github.com/NeoXR-app/NeoXR) 1.5 二次开发，
@@ -11,7 +11,8 @@
 权利归相应贡献者所有。完整保留上游 [GPL-3.0 许可证](LICENSE)，
 本二开版本继续按该许可证发布。详见[版权与权益说明](NOTICE.md)和[版本变更](CHANGELOG.md)。
 
-本版支持全宽 SBS 眼镜的单眼比例适配、媒体库整页滚动与首页栏目记忆，
+本版增加雷鸟 GT USB 头控、独立的手机陀螺仪灵敏度，以及同窗口内的网络媒体库切换。
+支持全宽 SBS 眼镜的单眼比例适配、媒体库整页滚动与首页栏目记忆，
 并增加本地、SMB、WebDAV 缩略图媒体库，文件夹浏览与排序，中文界面，
 最高 6× 长按倍速，手机单画面双指缩放，进度／音量／亮度手势和横竖屏控制，并修复眼镜窗口交接与显示恢复。
 完整功能说明与[下载发布页](https://github.com/wayhine/NeoXR/releases)见下方。
@@ -34,6 +35,8 @@ This fork includes saved local / SMB / WebDAV libraries with thumbnails, folder
 views and sorting. See [library browsing](docs/library-browsing.md),
 [playback controls](docs/playback-controls.md), and
 [XREAL 1S output / tracking troubleshooting](docs/xreal-1s.md).
+RayNeo GT tracking and build requirements are documented in
+[RayNeo GT head tracking](docs/rayneo-gt-head-tracking.md).
 
 ## Demo
 
@@ -217,6 +220,15 @@ To use it:
 
 Press **Head** again to go back to the phone gyroscope.
 
+**RayNeo GT** also supports USB head tracking in this release. It was tested with
+an OPPO Find X9 Pro using the RayNeo runtime included in the APK. Allow USB access,
+enable **Head**, then center the view. See the [GT integration notes](docs/rayneo-gt-head-tracking.md)
+for the tested runtime and hardware details.
+
+Phone and glasses sensitivities are saved separately under **PIC / 画质**. Phone
+gyro sensitivity defaults to 50%. Heading stays stable when the phone is flat,
+and changing from glasses tracking to phone tracking establishes a phone reference.
+
 **If a VPN runs on your phone** (One series only, which connects over the network),
 it may capture the connection to the glasses and head tracking will not start. Either turn the VPN off, or use a client that lets
 apps bypass the tunnel (in OpenVPN for Android: *Allow apps to bypass VPN* in the
@@ -266,6 +278,12 @@ You need JDK 17 and the Android SDK (compileSdk 35). Release builds are signed w
 the key described in `keystore.properties`; without that file a release build falls
 back to the debug key, so a fresh clone still builds.
 
+To build an APK with RayNeo GT tracking, first prepare the runtime from the tested
+RayNeoXR 2.1.2 APK. On Windows, pass its path, a JADX fat JAR containing dexlib2, and
+your JDK 17 directory to `scripts/prepare-rayneo-runtime.py`. The generated runtime
+is placed under `app/src/main/assets/rayneo`. The [GT integration notes](docs/rayneo-gt-head-tracking.md)
+contain the source APK checksum and preparation command.
+
 ## Contributing
 
 Device reports are the most useful contribution. NeoXR is developed on one pair of
@@ -278,6 +296,10 @@ works. Please use the
 Audio decoding for formats Android does not cover uses
 [FFmpeg](https://ffmpeg.org/) (LGPL-2.1), packaged for Media3 by the
 [Jellyfin project](https://github.com/jellyfin/jellyfin-androidx-media).
+
+RayNeo GT tracking uses the FFalcon / RayNeo runtime from RayNeoXR 2.1.2, together
+with this fork's USB lifecycle and pose adapter. Runtime component names and
+attribution are listed in [NOTICE.md](NOTICE.md).
 
 ## License
 

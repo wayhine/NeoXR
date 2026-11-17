@@ -186,6 +186,9 @@ class PlayerActivity : Activity(), SensorEventListener {
     private var zeroYaw = 0f
     /** Percent of real head/phone rotation carried into the view; 100 = one-to-one. */
     private var headSensitivity = 100
+    private var phoneSensitivity = 50
+    private val phoneOrientation = PhoneOrientation()
+    private var phoneNeedsCenter = false
     private var popupIsPicture = false
     private var zeroPitch = 0f
     private var yawZeroed = false // first sensor sample zeroes YAW (and only yaw)
@@ -205,9 +208,9 @@ class PlayerActivity : Activity(), SensorEventListener {
     // No full auto-centering on the first sensor sample: recenter() also zeroes PITCH,
     // which would capture whatever pose the phone happens to be in at launch. Laying
     // the phone down flat afterwards then reads as -90° ("looking at the floor") and
-    // the video goes black. Only a deliberate long-press recenter, made once the phone
-    // is where it will stay, has a meaningful pitch reference. See onSensorChanged for
-    // the yaw-only zeroing that IS safe.
+    // the video goes black. Long-press recenter supplies an explicit pitch reference.
+    // Source changes establish a phone reference while preserving the current view.
+    // See onSensorChanged for the initial yaw-only zeroing and source handoff.
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -222,6 +225,7 @@ class PlayerActivity : Activity(), SensorEventListener {
             subBold = p.getBoolean("subBold", false)
             subBottomPct = p.getInt("subBottom", 8)
             headSensitivity = p.getInt("headSens", 100)
+            phoneSensitivity = p.getInt("phoneSens", 50).coerceIn(25, 150)
             phoneSwipeSeeks = p.getBoolean("phoneSwipeSeeks", false)
             holdSpeedSetting = PlaybackGestureOptions.savedHoldSpeed(p.getFloat("holdSpeed", 2f))
         }
@@ -1766,8 +1770,10 @@ class PlayerActivity : Activity(), SensorEventListener {
         row("glowWidth", (renderer.ambientInset * 100).toInt(), 2, 70..96) {
             renderer.ambientInset = it / 100f
         }
-        header("头控 / 陀螺仪灵敏度")
+        header("眼镜头控灵敏度")
         row("headSens", headSensitivity, 5, 25..150) { headSensitivity = it }
+        header("手机陀螺仪灵敏度")
+        row("phoneSens", phoneSensitivity, 5, 25..150) { phoneSensitivity = it }
 
         trackList.addView(TextView(this).apply {
             text = "重置画质"
@@ -1990,6 +1996,7 @@ class PlayerActivity : Activity(), SensorEventListener {
     private fun toggleHead() {
         if (headMode) {
             headMode = false
+            phoneNeedsCenter = true
             headTracker?.stop()
             headTracker = null
             btnHead?.let { mark(it, false) }
@@ -1997,18 +2004,30 @@ class PlayerActivity : Activity(), SensorEventListener {
         } else {
             headMode = true
             btnHead?.let { mark(it, true) }
+            var firstHeadSample = true
             headTracker = HeadTracker(this) { s -> sbsOverlay.flash(s) }.apply {
                 onOrientation = { yaw, pitch ->
-                    // reader thread; renderer fields are volatile floats — safe
-                    sensorYaw = yaw
-                    sensorPitch = pitch
-                    applyView()
+                    handler.post {
+                        // Retired trackers can still have a sample queued during
+                        // a source switch. Keep all source/reference changes on UI.
+                        if (headMode && headTracker === this) {
+                            sensorYaw = yaw
+                            sensorPitch = pitch
+                            if (firstHeadSample) {
+                                firstHeadSample = false
+                                zeroYaw = yaw
+                                zeroPitch = pitch
+                            }
+                            applyView()
+                        }
+                    }
                 }
                 // tracker died (no network / stream lost): drop back to the phone
                 // gyro automatically, otherwise Head mode leaves the view frozen
                 onStopped = {
                     if (headMode) {
                         headMode = false
+                        phoneNeedsCenter = true
                         headTracker?.stop()
                         headTracker = null
                         btnHead?.let { mark(it, false) }
@@ -2025,7 +2044,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         // 100% is one-to-one with the real world, which is correct but feels fast to
         // some people: the glasses show ~50 degrees of view, so a real 50-degree turn
         // sweeps the whole panel. Below 100 the scene turns less than you do.
-        val g = headSensitivity / 100f
+        val g = (if (headMode) headSensitivity else phoneSensitivity) / 100f
         renderer.yawDeg = dragYaw + if (gyroEnabled) wrap(sensorYaw - zeroYaw) * g else 0f
         renderer.pitchDeg =
             (dragPitch + if (gyroEnabled) (sensorPitch - zeroPitch) * g else 0f)
@@ -2125,15 +2144,19 @@ class PlayerActivity : Activity(), SensorEventListener {
         if (headMode) return // the glasses' IMU owns sensorYaw/sensorPitch
         val r = FloatArray(9)
         SensorManager.getRotationMatrixFromVector(r, e.values)
-        // "magic window": look where the back of the phone points (-Z device axis in
-        // world coords). No Euler angles / remap — no gimbal lock in normal holds.
-        // R rows = world east/north/up, columns = device x/y/z; back = -(column z).
-        val east = -r[2]
-        val north = -r[5]
-        val up = -r[8]
-        // negated so that turning the phone right pans the view right
-        sensorYaw = -Math.toDegrees(Math.atan2(east.toDouble(), north.toDouble())).toFloat()
-        sensorPitch = Math.toDegrees(Math.asin(up.coerceIn(-1f, 1f).toDouble())).toFloat()
+        val angles = phoneOrientation.update(r) ?: return
+        sensorYaw = angles.first
+        sensorPitch = angles.second
+        if (phoneNeedsCenter) {
+            phoneNeedsCenter = false
+            // A source change has a new coordinate origin. Preserve the current
+            // view and establish the phone's own reference on its first sample.
+            dragYaw = renderer.yawDeg
+            dragPitch = renderer.pitchDeg
+            zeroYaw = sensorYaw
+            zeroPitch = sensorPitch
+            yawZeroed = true
+        }
         // Auto-center YAW ONLY on the first sample: the sensor's yaw reference is
         // arbitrary, so without this every video starts looking sideways. Pitch is
         // NOT zeroed — that would capture whatever pose the phone is in at the first
@@ -2234,6 +2257,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         // and holding it here would deny head tracking to the next player opened
         if (headMode) {
             headMode = false
+            phoneNeedsCenter = true
             headTracker?.stop()
             headTracker = null
             btnHead?.let { mark(it, false) }

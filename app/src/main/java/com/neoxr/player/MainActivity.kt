@@ -16,6 +16,7 @@ import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
+import androidx.activity.OnBackPressedCallback
 import org.json.JSONArray
 import java.net.URL
 
@@ -78,9 +79,10 @@ class MainActivity : AppCompatActivity() {
             可调整字幕大小、高度、字重、颜色和源布局。已含左右眼的立体字幕请选择“已为立体字幕”，避免重复显示。字幕高度可设为负值，让字幕显示在画面下方的黑色区域。
 
             头部追踪
-            支持 XREAL One / One Pro / 1S 和 Air 系列；其他设备可使用手机陀螺仪。在眼镜菜单中关闭防抖，选择跟随模式而非锚定模式，并更新固件。
-            播放时点击左侧“头控”。Air 系列需允许 USB 访问。面向正前方后，点击“回正”或长按手机空白控制区校准。
-            转动过快时，在“画质”中降低头控 / 陀螺仪灵敏度；100表示真实角度。再次点击“头控”返回手机陀螺仪。
+            支持 XREAL One / One Pro / 1S、Air 系列和雷鸟 GT。眼镜自身的空间固定会叠加姿态处理，请在眼镜菜单中选择跟随模式。
+            播放时点击左侧“头控”。Air 系列和雷鸟 GT 需允许 USB 访问。面向正前方后，点击“回正”或长按手机空白控制区校准。
+            雷鸟 GT 通过 USB 读取眼镜姿态，开启头控时自动居中。连接中断后会提示，重新连接眼镜后可再次开启头控。
+            “画质”中可分别调整眼镜头控和手机陀螺仪灵敏度，手机默认50，100表示真实角度。再次点击“头控”返回手机陀螺仪。
             One / 1S 通过 USB 网络读取头控；手机须支持 USB 以太网，眼镜须启用 TCP/IP / 以太网。能显示视频不代表传感器链路已连接。连接失败时会自动重试，仍失败请关闭 Control Glasses / Nebula 等占用应用，并检查 VPN、线材和固件。只对头控套接字选路，不改变媒体库的 Wi-Fi 连接。
         """.trimIndent()
     }
@@ -93,6 +95,12 @@ class MainActivity : AppCompatActivity() {
     private val REQ_MEDIA_PERM = 8
     private val REQ_LOCAL_FOLDER = 9
     private var wrapView: SbsFrameLayout? = null
+    private var networkScreen: NetworkLibraryScreen? = null
+    private var networkWrap: SbsFrameLayout? = null
+    private var networkUrl: String? = null
+    private val networkBack = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = this@MainActivity.onBackPressed()
+    }
     private val library by lazy { LocalLibraryRepository.get(this) }
     private var libraryMode = true
     private var libraryFolder: String? = null
@@ -407,6 +415,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        onBackPressedDispatcher.addCallback(this, networkBack)
         // findViewById via wrap: with glasses attached the content lives on THEM,
         // not in the activity's content view (which is then the touchpad controller)
         val wrap = SbsFrameLayout.attach(this, R.layout.activity_main)
@@ -518,9 +527,47 @@ class MainActivity : AppCompatActivity() {
 
         list.setOnItemClickListener { _, _, pos, _ ->
             val url = sites[pos]
-            if (NetworkMedia.isNetwork(url)) startActivity(Intent(this, NetworkLibraryActivity::class.java).putExtra("url", url))
+            if (NetworkMedia.isNetwork(url)) openNetworkLibrary(url)
             else startActivity(Intent(this, VideoListActivity::class.java).putExtra("url", url))
         }
+        savedInstanceState?.getString("networkUrl")?.let { url ->
+            openNetworkLibrary(url, savedInstanceState.getBundle("networkState"))
+        }
+    }
+
+    private fun openNetworkLibrary(url: String, state: Bundle? = null, browse: Boolean = false) {
+        val wrap = wrapView ?: return
+        if (networkScreen != null) return
+        libraryView?.suspend()
+        library.removeObserver(libraryObserver)
+        val content = SbsFrameLayout(this).apply {
+            isSaveFromParentEnabled = false
+            setBackgroundColor(getColor(R.color.backdrop))
+            layoutInflater.inflate(R.layout.activity_network_library, this, true)
+        }
+        // Keep the existing Presentation and its pointer. Only the content changes,
+        // so Android never exposes a mirrored phone window during this navigation.
+        wrap.getChildAt(0).visibility = View.GONE
+        wrap.addView(content, 1, android.widget.FrameLayout.LayoutParams(-1, -1))
+        networkWrap = content
+        networkUrl = url
+        networkScreen = NetworkLibraryScreen(this, content, url, state, browse) { closeNetworkLibrary() }
+        networkBack.isEnabled = true
+        networkScreen?.resume()
+        android.util.Log.i("NeoXR", "network library opened in existing window")
+    }
+
+    private fun closeNetworkLibrary() {
+        networkBack.isEnabled = false
+        networkScreen?.close()
+        networkScreen = null
+        networkWrap?.let { wrapView?.removeView(it) }
+        networkWrap = null
+        networkUrl = null
+        wrapView?.getChildAt(0)?.visibility = View.VISIBLE
+        libraryView?.resume()
+        library.observe(libraryObserver)
+        android.util.Log.i("NeoXR", "network library closed in existing window")
     }
 
     @Deprecated("Deprecated in Java")
@@ -555,23 +602,32 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
-        libraryView?.resume()
-        library.observe(libraryObserver)
+        if (networkScreen != null) networkScreen?.resume()
+        else {
+            libraryView?.resume()
+            library.observe(libraryObserver)
+        }
     }
 
     override fun onStop() {
+        networkScreen?.pause()
         libraryView?.suspend()
         library.removeObserver(libraryObserver)
         super.onStop()
     }
 
     override fun onDestroy() {
+        networkScreen?.close()
         libraryView?.close()
         if (wrapView?.findViewById<GridView>(R.id.libraryGrid)?.adapter != null) libraryAdapter.close()
         super.onDestroy()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
+        networkUrl?.let { url ->
+            outState.putString("networkUrl", url)
+            outState.putBundle("networkState", Bundle().also { networkScreen?.saveState(it) })
+        }
         outState.putBoolean("libraryMode", libraryMode)
         outState.putString("libraryFolder", libraryFolder)
         outState.putString("libraryPath", libraryPath)
@@ -580,6 +636,10 @@ class MainActivity : AppCompatActivity() {
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
+        networkScreen?.let { screen ->
+            if (!screen.onBack()) closeNetworkLibrary()
+            return
+        }
         val wrap = wrapView
         if (wrap?.findViewById<View>(R.id.fileOverlay)?.visibility == View.VISIBLE) {
             wrap.findViewById<View>(R.id.fileClose).performClick()
@@ -626,7 +686,7 @@ class MainActivity : AppCompatActivity() {
                     if (url !in sites) { sites.add(url); save(); adapter.notifyDataSetChanged() }
                     showSites()
                     dialog.dismiss()
-                    startActivity(Intent(this, NetworkLibraryActivity::class.java).putExtra("url", url).putExtra("browse", true))
+                    openNetworkLibrary(url, browse = true)
                 } catch (_: IllegalArgumentException) {
                     address.error = "请填写完整的 HTTP 或 HTTPS WebDAV 目录地址"
                 }

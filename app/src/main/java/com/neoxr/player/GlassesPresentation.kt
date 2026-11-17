@@ -8,7 +8,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.WindowManager
 
-/** Only the resumed page owns a window on the glasses. */
+/** Owns the resumed activity's window on the glasses. */
 internal class GlassesPresentation(
     private val activity: Activity,
     private val presentation: Presentation,
@@ -25,7 +25,7 @@ internal class GlassesPresentation(
             try {
                 presentation.setOnDismissListener { if (!closed && resumed) onDismissed() }
                 presentation.show()
-                android.util.Log.i("NeoXR", "presentation shown on display ${presentation.display.displayId}")
+                android.util.Log.i("NeoXR", "presentation shown on display ${presentation.display.displayId} for ${activity.javaClass.simpleName}")
             } catch (e: Exception) {
                 dismiss()
                 attempts++
@@ -64,7 +64,9 @@ internal class GlassesPresentation(
     private fun dismiss() {
         // An intentional page handoff must not trigger display-loss recovery.
         presentation.setOnDismissListener(null)
+        val wasShowing = presentation.isShowing
         presentation.dismiss()
+        if (wasShowing) android.util.Log.i("NeoXR", "presentation hidden on display ${presentation.display.displayId} for ${activity.javaClass.simpleName}")
     }
 
     override fun close() {
