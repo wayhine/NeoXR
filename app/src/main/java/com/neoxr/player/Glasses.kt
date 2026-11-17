@@ -104,6 +104,10 @@ class GlassesOut(
 ) {
 
     private val presentation = Presentation(activity, glassesDisplay)
+    private val prefs = activity.getSharedPreferences("neoxr", Context.MODE_PRIVATE)
+    private val menuModeKey = glassesDisplay.mode.let {
+        "menuSbs:${glassesDisplay.name}:${it.physicalWidth}x${it.physicalHeight}"
+    }
 
     /**
      * Label for the display in use, shown on the remote so a wrong auto-pick is
@@ -160,11 +164,17 @@ class GlassesOut(
     private var cy = 0f
 
     init {
+        wrap.eyeAspect = glassesDisplay.mode.let {
+            VideoGeometry.glassesEyeAspect(it.physicalWidth, it.physicalHeight)
+        }
+        val wideMode = glassesDisplay.mode.let { VideoGeometry.isFullSbs(it.physicalWidth, it.physicalHeight) }
+        wrap.sbs = prefs.getBoolean(menuModeKey, wideMode)
         // a Presentation uses the default dialog theme, whose window background is
         // white; the app's screens assume the dark backdrop
         wrap.setBackgroundColor(activity.getColor(R.color.backdrop))
         wrap.addView(cursor)
         presentation.setContentView(wrap)
+        wrap.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> place() }
         GlassesPresentation(activity, presentation,
             onDismissed = { watcher.presentationDismissed() }, onFailure = { e ->
             android.util.Log.w("NeoXR", "presentation refused by display: $e")
@@ -175,19 +185,21 @@ class GlassesOut(
         })
 
         wrap.post {
-            cx = wrap.width / 2f
+            cx = wrap.contentWidth / 2f
             cy = wrap.height / 2f
             place()
         }
     }
 
     private fun place() {
+        cx = cx.coerceIn(0f, (wrap.contentWidth - 1f).coerceAtLeast(0f))
+        cy = cy.coerceIn(0f, (wrap.height - 1f).coerceAtLeast(0f))
         cursor.translationX = cx
         cursor.translationY = cy
     }
 
     fun move(dx: Float, dy: Float) {
-        cx = (cx + dx).coerceIn(0f, wrap.width - 1f)
+        cx = (cx + dx).coerceIn(0f, wrap.contentWidth - 1f)
         cy = (cy + dy).coerceIn(0f, wrap.height - 1f)
         place()
     }
@@ -271,13 +283,37 @@ class GlassesOut(
         input.requestFocus()
     }
 
-    // Two-finger scroll is a real synthesized drag at the cursor, so lists, grids and
-    // web pages all scroll natively (no per-view scrollBy special cases).
+    // Library pages share a whole-page scroll. Web pages and popup panels receive
+    // a synthesized drag at the cursor.
     private var dragT0 = 0L
     private var dragY = 0f
     private var dragging = false
+    private var scrollingPage: LibraryScrollFrame? = null
+    private var scrollRemainder = 0f
 
     fun scroll(dy: Float) {
+        if (!dragging) {
+            var parent: View? = scrollTarget(wrap, cx, cy)
+            while (parent != null && parent !== wrap) {
+                if (parent is LibraryScrollFrame) {
+                    scrollingPage = parent
+                    parent.stopScroll()
+                    break
+                }
+                // In-layout lists and management panels retain their native scrolling.
+                if ((parent is android.widget.AbsListView && parent.id != R.id.libraryGrid && parent.id != R.id.sites) ||
+                    parent is android.widget.ScrollView) break
+                parent = parent.parent as? View
+            }
+        }
+        scrollingPage?.let {
+            dragging = true
+            scrollRemainder -= dy
+            val pixels = scrollRemainder.toInt()
+            scrollRemainder -= pixels
+            it.scrollPage(pixels)
+            return
+        }
         val t = SystemClock.uptimeMillis()
         if (!dragging) {
             dragging = true
@@ -293,9 +329,29 @@ class GlassesOut(
         mv.recycle()
     }
 
+    private fun scrollTarget(view: View, x: Float, y: Float): View? {
+        if (view === cursor || view.visibility != View.VISIBLE) return null
+        if (view is android.view.ViewGroup) {
+            for (i in view.childCount - 1 downTo 0) {
+                val child = view.getChildAt(i)
+                val localX = x + view.scrollX - child.x
+                val localY = y + view.scrollY - child.y
+                if (localX >= 0 && localX < child.width && localY >= 0 && localY < child.height) {
+                    scrollTarget(child, localX, localY)?.let { return it }
+                }
+            }
+        }
+        return view
+    }
+
     fun scrollEnd() {
         if (!dragging) return
         dragging = false
+        scrollRemainder = 0f
+        if (scrollingPage != null) {
+            scrollingPage = null
+            return
+        }
         val t = SystemClock.uptimeMillis()
         val up = MotionEvent.obtain(dragT0, t, MotionEvent.ACTION_UP, cx, dragY, 0)
         wrap.inject(up)
@@ -303,7 +359,9 @@ class GlassesOut(
     }
 
     fun toggleSbs(): Boolean {
+        scrollEnd()
         wrap.sbs = !wrap.sbs
+        prefs.edit().putBoolean(menuModeKey, wrap.sbs).apply()
         return wrap.sbs
     }
 
@@ -385,9 +443,7 @@ class GlassesOut(
                 activity.getColor(if (out.wrap.sbs) R.color.primary else R.color.on_surface)
             )
             sbsBtn.setOnClickListener {
-                val on = out.toggleSbs()
-                activity.getSharedPreferences("neoxr", Context.MODE_PRIVATE)
-                    .edit().putBoolean("menuSbs", on).apply()
+                out.toggleSbs()
                 paintSbs()
             }
             paintSbs()
@@ -573,21 +629,26 @@ private class TouchpadView(activity: Activity, private val out: GlassesOut) : Vi
             MotionEvent.ACTION_POINTER_DOWN -> {
                 multi = true
                 scrolling = true
+                lastY = (0 until ev.pointerCount).sumOf { ev.getY(it).toDouble() }.toFloat() / ev.pointerCount
                 invalidate()
             }
             MotionEvent.ACTION_MOVE -> {
                 val dx = ev.x - lastX
-                val dy = ev.y - lastY
+                val scrollY = (0 until ev.pointerCount).sumOf { ev.getY(it).toDouble() }.toFloat() / ev.pointerCount
+                val dy = scrollY - lastY
                 travelled += Math.abs(dx) + Math.abs(dy)
-                if (ev.pointerCount >= 2) out.scroll(dy) else out.move(dx * 1.6f, dy * 1.6f)
-                lastX = ev.x; lastY = ev.y
+                if (ev.pointerCount >= 2) out.scroll(dy)
+                else if (!multi) out.move(dx * 1.6f, (ev.y - lastY) * 1.6f)
+                lastX = ev.x; lastY = scrollY
                 px = ev.x.coerceIn(0f, width.toFloat())
                 py = ev.y.coerceIn(0f, height.toFloat())
                 invalidate()
             }
             MotionEvent.ACTION_POINTER_UP -> {
-                out.scrollEnd()
-                scrolling = false
+                val remaining = (0 until ev.pointerCount).filter { it != ev.actionIndex }
+                lastY = remaining.sumOf { ev.getY(it).toDouble() }.toFloat() / remaining.size
+                if (remaining.size < 2) out.scrollEnd()
+                scrolling = remaining.size >= 2
                 invalidate()
             }
             MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {

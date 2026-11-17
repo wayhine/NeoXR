@@ -13,12 +13,14 @@ internal object VideoGeometry {
     fun outputAspect(width: Int, height: Int, mono: Boolean, eyeAspect: Float = 16f / 9f): Float =
         if (mono) aspect(width, height).takeIf { it > 0f } ?: (16f / 9f) else eyeAspect
 
+    fun isFullSbs(width: Int, height: Int): Boolean = aspect(width, height) >= 2.5f
+
     // Half SBS stretches each half to the entire panel; Full SBS sends two full
     // panels. 1S can expose 16:10 as well as 16:9. A wide timing alone does not
     // prove the glasses are in 3D: the user must match the OSD mode to our output.
     fun glassesEyeAspect(width: Int, height: Int): Float {
         val full = aspect(width, height).takeIf { it > 0 } ?: return 16f / 9f
-        return if (full >= 2.5f) full / 2 else full
+        return if (isFullSbs(width, height)) full / 2 else full
     }
 
     /** Contain the full frame, without cropping UVs or distorting its aspect. */

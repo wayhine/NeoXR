@@ -3,6 +3,7 @@ package com.neoxr.player
 import android.app.Activity
 import android.content.Context
 import android.graphics.Canvas
+import android.graphics.Matrix
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.SystemClock
@@ -39,7 +40,7 @@ fun Activity.fullscreenOverCutout() {
 }
 
 /**
- * Draws its content twice, squeezed into the left/right screen halves, so regular
+ * Lays out one eye's content and draws it into both screen halves, so regular
  * Android UI stays readable while the glasses are in native 3D-SBS mode. Touches on
  * either half are mapped back to full-layout coordinates.
  *
@@ -48,15 +49,59 @@ fun Activity.fullscreenOverCutout() {
  */
 class SbsFrameLayout(context: Context) : FrameLayout(context) {
 
-    // The glasses split the frame at the EXACT center and stretch each half back to
-    // the full eye panel — no cropping. So both copies must span a full half, and
-    // neither may be inset: insetting displaces the eyes' image centers by far more
-    // than stereo fusion tolerates. Same law applies to VrRenderer's viewports.
+    // Both copies fill their entire physical half. Full SBS keeps square pixels,
+    // while Half SBS compresses horizontally for the glasses to expand optically.
     var sbs = false
         set(value) {
             field = value
+            requestLayout()
             invalidate()
         }
+
+    /** Physical aspect of one eye, supplied by the current external display mode. */
+    var eyeAspect: Float? = null
+        set(value) { field = value?.takeIf { it.isFinite() && it > 0f }; requestLayout() }
+
+    val contentWidth: Int
+        get() = if (sbs && eyeAspect != null) (height * eyeAspect!!).toInt().coerceAtLeast(1) else width
+
+    override fun onMeasure(widthMeasureSpec: Int, heightMeasureSpec: Int) {
+        if (!sbs || eyeAspect == null) {
+            super.onMeasure(widthMeasureSpec, heightMeasureSpec)
+            return
+        }
+        val physicalWidth = MeasureSpec.getSize(widthMeasureSpec)
+        val logicalWidth = (MeasureSpec.getSize(heightMeasureSpec) * eyeAspect!!).toInt().coerceAtLeast(1)
+        super.onMeasure(MeasureSpec.makeMeasureSpec(logicalWidth, MeasureSpec.EXACTLY), heightMeasureSpec)
+        setMeasuredDimension(physicalWidth, measuredHeight)
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        if (!sbs || eyeAspect == null) {
+            super.onLayout(changed, left, top, right, bottom)
+            return
+        }
+        // FrameLayout positions gravity-aligned children against its physical width.
+        // In SBS they all belong to the logical, single-eye layout instead.
+        for (i in 0 until childCount) {
+            val child = getChildAt(i)
+            if (child.visibility == GONE) continue
+            val lp = child.layoutParams as LayoutParams
+            val gravity = if (lp.gravity == -1) Gravity.TOP or Gravity.START else lp.gravity
+            val absolute = Gravity.getAbsoluteGravity(gravity, layoutDirection)
+            val x = when (absolute and Gravity.HORIZONTAL_GRAVITY_MASK) {
+                Gravity.RIGHT -> contentWidth - paddingRight - lp.rightMargin - child.measuredWidth
+                Gravity.CENTER_HORIZONTAL -> paddingLeft + (contentWidth - paddingLeft - paddingRight - child.measuredWidth) / 2 + lp.leftMargin - lp.rightMargin
+                else -> paddingLeft + lp.leftMargin
+            }
+            val y = when (gravity and Gravity.VERTICAL_GRAVITY_MASK) {
+                Gravity.BOTTOM -> height - paddingBottom - lp.bottomMargin - child.measuredHeight
+                Gravity.CENTER_VERTICAL -> paddingTop + (height - paddingTop - paddingBottom - child.measuredHeight) / 2 + lp.topMargin - lp.bottomMargin
+                else -> paddingTop + lp.topMargin
+            }
+            child.layout(x, y, x + child.measuredWidth, y + child.measuredHeight)
+        }
+    }
 
     /** When set, a long press anywhere (except editable text) toggles SBS. */
     var onLongPressToggle: (() -> Unit)? = null
@@ -108,8 +153,9 @@ class SbsFrameLayout(context: Context) : FrameLayout(context) {
         }
         for (eye in 0..1) {
             canvas.save()
+            canvas.clipRect(eye * width / 2f, 0f, (eye + 1) * width / 2f, height.toFloat())
             canvas.translate(eye * width / 2f, 0f)
-            canvas.scale(0.5f, 1f)
+            canvas.scale(width / (2f * contentWidth), 1f)
             super.dispatchDraw(canvas)
             canvas.restore()
         }
@@ -119,14 +165,18 @@ class SbsFrameLayout(context: Context) : FrameLayout(context) {
         if (onLongPressToggle != null) detector.onTouchEvent(ev)
         if (!sbs || width == 0) return super.dispatchTouchEvent(ev)
         val copy = MotionEvent.obtain(ev)
-        copy.setLocation(mapX(ev.x), ev.y)
+        val eyeStart = if (ev.x >= width / 2f) width / 2f else 0f
+        copy.transform(Matrix().apply {
+            setValues(floatArrayOf(contentWidth * 2f / width, 0f, -eyeStart * contentWidth * 2f / width,
+                0f, 1f, 0f, 0f, 0f, 1f))
+        })
         val handled = super.dispatchTouchEvent(copy)
         copy.recycle()
         return handled
     }
 
     private fun mapX(x: Float): Float =
-        if (sbs && width > 0) (x % (width / 2f)) * 2f else x
+        if (sbs && width > 0) (x % (width / 2f)) * contentWidth * 2f / width else x
 
     /** Dispatches a synthesized event in layout coords, bypassing the SBS touch remap. */
     fun inject(ev: MotionEvent): Boolean = super.dispatchTouchEvent(ev)

@@ -1,6 +1,6 @@
 # NeoXR 社区二开版：版权、许可与权益说明
 
-本说明适用于 **NeoXR Community Fork 1.6.0-community.1**，修改日期为 **2026-11-04**。
+本说明适用于 **NeoXR Community Fork 1.6.0-community.4**，修改日期为 **2026-11-17**。
 
 ## 来源与维护者
 
@@ -29,7 +29,7 @@ APK 同时携带 `LICENSE` 和本说明；帮助页包含项目来源、维护�
 ## 本次修改范围
 
 - 本地、SMB 与 WebDAV 媒体库的递归扫描、保存恢复、缩略图、搜索、文件夹浏览与排序。
-- 中文界面、播放器手势、临时倍速、横竖屏切换及控制栏布局。
+- 中文界面、播放器手势、双指缩放、临时倍速、横竖屏切换及控制栏布局。
 - 外接眼镜的单画面／SBS 输出、页面窗口交接、断连恢复及诊断日志采集。
 - XREAL One 系列与 1S 的传感器数据读取、校验及连接恢复改进。
 
@@ -52,7 +52,7 @@ NeoXR、XREAL 及其他品牌名称、标识涉及的相关权利归各自权利
 ## English attribution
 
 This is an unofficial modification of NeoXR 1.5 by the community fork maintained by
-wayhine, dated 2026-11-04. The upstream project is https://github.com/NeoXR-app/NeoXR,
+wayhine, dated 2026-11-17. The upstream project is https://github.com/NeoXR-app/NeoXR,
 based on commit 22e3234fa479c54071e662a10b1827b294821510.
 
 Copyright in the original work remains with its original authors and contributors.

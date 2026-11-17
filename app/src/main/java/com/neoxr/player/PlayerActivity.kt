@@ -58,6 +58,8 @@ class PlayerActivity : Activity(), SensorEventListener {
     private var presentation: Presentation? = null
     private var outputWindow: GlassesPresentation? = null
     private var glassesDisplay: Display? = null
+    // Display.mode is live. Save the immutable mode used to build this renderer.
+    private var outputMode: Display.Mode? = null
     private lateinit var outputWatcher: GlassesWatcher
     private var restorePlaying = true
     private var lifecyclePaused = false
@@ -115,6 +117,7 @@ class PlayerActivity : Activity(), SensorEventListener {
     private var gestureVolume = 0
     private var swipeSeekWarning = false
     private var screenHoldAllowed = false
+    private var phonePinchZoom: PhonePinchZoom? = null
     private var speedButtonTouched = false
     private val holdSpeed = TemporaryPlaybackSpeed(
         { player?.playbackParameters?.speed ?: 1f },
@@ -134,7 +137,7 @@ class PlayerActivity : Activity(), SensorEventListener {
     private var eyeShiftDp = 0
     private var widthPct = 100
     private var heightPct = 100
-    private var zoomPct = 100 // camera magnification, in tan space
+    private var zoomPct = 100f // keep fractional pinch updates; round only the readout
     private var seekDragging = false
     private val handler = Handler(Looper.getMainLooper())
     private var systemAutoRotate = false
@@ -243,6 +246,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         // when the glasses display exists, the GL view lives on IT (via Presentation),
         // so it must be built with the presentation's display context
         val ext = glassesDisplay
+        outputMode = ext?.mode
         if (ext != null) presentation = Presentation(this, ext)
         renderer = VrRenderer { st ->
             android.util.Log.i("NeoXR", "GL surface ready (onSurfaceReady)")
@@ -262,8 +266,12 @@ class PlayerActivity : Activity(), SensorEventListener {
                 }
             }
         }
-        renderer.monoOutput = if (ext == null && savedInstanceState?.getBoolean("outputOnGlasses") == true) true
-            else savedInstanceState?.getBoolean("monoOutput", true) ?: true
+        val defaultMono = outputMode?.let { !VideoGeometry.isFullSbs(it.physicalWidth, it.physicalHeight) } ?: true
+        val modeChanged = outputMode != null && savedInstanceState != null &&
+            (savedInstanceState.getInt("outputWidth") != outputMode!!.physicalWidth ||
+                savedInstanceState.getInt("outputHeight") != outputMode!!.physicalHeight)
+        renderer.monoOutput = if (modeChanged || (ext == null && savedInstanceState?.getBoolean("outputOnGlasses") == true)) defaultMono
+            else savedInstanceState?.getBoolean("monoOutput", defaultMono) ?: defaultMono
         if (savedInstanceState?.containsKey("projection") == true) {
             screenAngle = savedInstanceState.getInt("projection")
             stereo = savedInstanceState.getString("sourceStereo") ?: "sbs"
@@ -272,7 +280,7 @@ class PlayerActivity : Activity(), SensorEventListener {
             dragPitch = savedInstanceState.getFloat("dragPitch")
             renderer.configure(screenAngle, stereo)
         }
-        ext?.mode?.let { renderer.stereoOutputAspect = VideoGeometry.glassesEyeAspect(it.physicalWidth, it.physicalHeight) }
+        outputMode?.let { renderer.stereoOutputAspect = VideoGeometry.glassesEyeAspect(it.physicalWidth, it.physicalHeight) }
         // picture calibration describes the glasses, so it is restored per launch —
         // and only here: renderer is lateinit, reading prefs into it any earlier
         // throws before the player ever draws
@@ -292,7 +300,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         }
         // Use the active physical mode, never request another mode on the glasses.
         // A Half SBS / 2D switch can change the entire DP connection.
-        ext?.mode?.let { mode ->
+        outputMode?.let { mode ->
             glView.holder.setFixedSize(mode.physicalWidth, mode.physicalHeight)
         }
         sbsOverlay = SbsFrameLayout(this).apply { sbs = ext == null && !renderer.monoOutput }
@@ -334,7 +342,10 @@ class PlayerActivity : Activity(), SensorEventListener {
                 glassesRoot.addView(glView, FrameLayout.LayoutParams(
                     FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT
                 ))
-                val subs = SbsFrameLayout(it.context).apply { sbs = !renderer.monoOutput && !subStereoSource }
+                val subs = SbsFrameLayout(it.context).apply {
+                    eyeAspect = renderer.stereoOutputAspect
+                    sbs = !renderer.monoOutput && !subStereoSource
+                }
                 subsWrap = subs
                 subs.addView(androidx.media3.ui.SubtitleView(it.context).apply {
                     glassesSubs = this
@@ -467,6 +478,7 @@ class PlayerActivity : Activity(), SensorEventListener {
             }
             paint()
             setOnClickListener {
+                phonePinchZoom?.cancel()
                 renderer.monoOutput = !renderer.monoOutput
                 sbsOverlay.sbs = glassesDisplay == null && !renderer.monoOutput
                 subsWrap?.sbs = !renderer.monoOutput && !subStereoSource
@@ -602,11 +614,29 @@ class PlayerActivity : Activity(), SensorEventListener {
                 if (glassesDisplay == null) beginHoldSpeed() else recenter()
             }
         })
+        phonePinchZoom = PhonePinchZoom(this,
+            enabled = { glassesDisplay == null && renderer.monoOutput && !gestureSettingsOpen },
+            currentScale = { zoomPct / 100f },
+            onScale = { scale ->
+                val percent = scale * 100
+                if (percent != zoomPct) setZoom(percent, revealControls = false)
+            },
+            onClaim = { event ->
+                cancelHoldPlayback()
+                MotionEvent.obtain(event).also { cancel ->
+                    cancel.action = MotionEvent.ACTION_CANCEL
+                    gestures.onTouchEvent(cancel)
+                    cancel.recycle()
+                }
+            })
         // look-around gestures: on the GL view itself when it is on the phone, on the
         // whole phone screen (acting as a touchpad) when the video is on the glasses
         (if (glassesDisplay == null) glView else root).setOnTouchListener { _, ev ->
             if (ev.actionMasked == MotionEvent.ACTION_DOWN) screenHoldAllowed = true
-            if (ev.pointerCount > 1) {
+            val pinchHandled = phonePinchZoom?.onTouchEvent(ev) == true
+            if (pinchHandled) {
+                screenHoldAllowed = false
+            } else if (ev.pointerCount > 1) {
                 screenHoldAllowed = false
                 endHoldSpeed()
                 MotionEvent.obtain(ev).also { cancel ->
@@ -616,7 +646,7 @@ class PlayerActivity : Activity(), SensorEventListener {
                 }
             } else if (screenHoldAllowed) gestures.onTouchEvent(ev)
             if (ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) {
-                finishSwipeSeek(commit = ev.actionMasked == MotionEvent.ACTION_UP)
+                finishSwipeSeek(commit = ev.actionMasked == MotionEvent.ACTION_UP && !pinchHandled)
                 screenHoldAllowed = false
                 endHoldSpeed()
             }
@@ -706,6 +736,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         presentation?.dismiss()
         presentation = null
         glassesDisplay = null
+        outputMode = null
         glassesSubs = null
         subsWrap = null
         levelView?.let { root.removeView(it) }
@@ -737,6 +768,8 @@ class PlayerActivity : Activity(), SensorEventListener {
         outState.putBoolean("headTracking", headMode || restartHead)
         outState.putBoolean("monoOutput", renderer.monoOutput)
         outState.putBoolean("outputOnGlasses", glassesDisplay != null)
+        outState.putInt("outputWidth", outputMode?.physicalWidth ?: 0)
+        outState.putInt("outputHeight", outputMode?.physicalHeight ?: 0)
         outState.putInt("projection", screenAngle)
         outState.putString("sourceStereo", stereo)
         outState.putBoolean("formatAuto", formatAuto)
@@ -978,7 +1011,7 @@ class PlayerActivity : Activity(), SensorEventListener {
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
         super.onWindowFocusChanged(hasFocus)
-        if (!hasFocus) cancelHoldPlayback()
+        if (!hasFocus) { phonePinchZoom?.cancel(); cancelHoldPlayback() }
     }
 
     override fun dispatchTouchEvent(event: MotionEvent): Boolean {
@@ -1482,6 +1515,7 @@ class PlayerActivity : Activity(), SensorEventListener {
             getSharedPreferences("neoxr", MODE_PRIVATE).edit().putString("playbackOrientation", orientationMode).apply()
         }
         updateOrientationButton()
+        phonePinchZoom?.cancel()
         cancelHoldPlayback()
         if (gestureSettingsOpen) closeGestureSettings()
         qualityList.visibility = View.GONE
@@ -1503,15 +1537,24 @@ class PlayerActivity : Activity(), SensorEventListener {
     private fun applyFov() {
         val fov = 2 * Math.toDegrees(Math.atan(Math.tan(Math.toRadians(36.0)) / (zoomPct / 100.0)))
         renderer.fovDeg = fov.toFloat().coerceIn(5f, 150f)
+        renderer.flatZoom = zoomPct / 100f
     }
 
     /** Camera zoom; resets per video like the other tweaks. */
     private fun adjustZoom(delta: Int) {
-        zoomPct = (zoomPct + delta).coerceIn(50, 300)
+        setZoom(zoomPct + delta, revealControls = true)
+    }
+
+    private fun setZoom(percent: Float, revealControls: Boolean) {
+        val before = zoomPct.roundToInt()
+        zoomPct = percent.coerceIn(50f, 300f)
         applyFov()
         // remote steppers show the value inline; the SBS overlay has no readout — flash
-        zValue?.also { it.text = "缩 $zoomPct" } ?: sbsOverlay.flash("缩放 $zoomPct%")
-        showControls()
+        val readout = zoomPct.roundToInt()
+        if (readout != before || revealControls) {
+            zValue?.also { it.text = "缩 $readout" } ?: sbsOverlay.flash("缩放 $readout%")
+        }
+        if (revealControls) showControls()
     }
 
     /**
@@ -2131,6 +2174,7 @@ class PlayerActivity : Activity(), SensorEventListener {
     }
 
     override fun onPause() {
+        phonePinchZoom?.cancel()
         restorePlaying = player?.playWhenReady ?: restorePlaying
         lifecyclePaused = true
         restartHead = headMode

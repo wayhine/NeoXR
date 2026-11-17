@@ -33,7 +33,7 @@ class MainActivity : AppCompatActivity() {
             NEOXR 社区二开版使用指南
 
             版权与开源说明
-            本版本由 wayhine 维护，基于 NeoXR-app/NeoXR 二次开发，非上游官方发行版。本次修改日期：2026-11-04。
+            本版本由 wayhine 维护，基于 NeoXR-app/NeoXR 二次开发，非上游官方发行版。本次修改日期：2026-11-17。
             上游源码与原有素材的版权归原作者和相应贡献者所有；二开新增与修改部分的权利归相应贡献者所有。本项目继续依照 GNU GPL 第3版发布，允许按许可证条款使用、修改与再分发，不提供担保。
             上游：https://github.com/NeoXR-app/NeoXR
             二开源码与版本：https://github.com/wayhine/NeoXR
@@ -54,13 +54,14 @@ class MainActivity : AppCompatActivity() {
             网页播放视频后，点击“VR播放”交给播放器。箭头控制网页前进、后退。“视图”可切换手机、Quest 3 或电脑版页面；百分比按钮调整页面缩放。网页自身是否支持登录、播放由网站决定。
 
             眼镜与手机控制器
-            连接 USB-C 眼镜后，画面显示在眼镜上，手机成为控制器。菜单中滑动移动指针、轻点选择、双指滚动。输入框会在手机上弹出编辑窗口。
+            连接 USB-C 眼镜后，画面显示在眼镜上，手机成为控制器。菜单中滑动移动指针、轻点选择、双指滚动。媒体库的顶部栏目与内容作为整页上下滚动，双指在触控板上滑浏览下方内容、下滑返回顶部。输入框会在手机上弹出编辑窗口。下次打开首页会恢复上次选择的“本地”或“网站 / 网络”。
             未连接眼镜时，长按菜单可切换菜单双屏显示；这与播放器中的长按倍速是不同的操作。多屏设备可用“屏幕”按钮切换输出。
 
             播放器手势与倍速
             轻点视频显示或隐藏控制栏；“播放 / 暂停”按钮控制播放状态。顶部的横竖屏切换按钮、手势、回正与关闭并排显示。
             播放器直接跟随手机系统的自动旋转设置：系统开启自动旋转时随手机方向转动，关闭时保持当前方向。没有额外开关。顶部按钮仍可一键切换横竖屏；系统自动旋转开启时，手动切换暂时生效，手机再次转到另一稳定方向后恢复自动跟随。眼镜模式下只改变手机控制器的方向。竖屏底部从上到下依次为进度条、播放控制、画质与字幕等按钮。
-            手机和眼镜每次打开媒体默认单画面输出。“立体”中的“输出”可切换为 SBS 双屏。单画面须在眼镜上关闭 3D；SBS 须在眼镜上选择与输出对应的半宽或全宽模式并关闭 REAL 3D。视频源的二维、左右、上下布局与输出模式独立。
+            手机和普通宽高比眼镜每次打开媒体默认单画面输出；检测到3840×1080等全宽双目模式时默认SBS输出。菜单双屏按单眼尺寸布局，全宽模式下一眼使用一半输出宽度。“立体”中的“输出”可手动切换单画面与SBS。单画面须在眼镜上关闭3D；SBS须在眼镜上选择与输出对应的半宽或全宽模式并关闭REAL 3D。视频源的二维、左右、上下布局与输出模式独立。
+            手机单画面播放时，双指张开放大、捏合缩小，范围为50%至300%，松手保留当前缩放。普通视频保持比例，VR画面同步调整视野。双指操作会取消未完成的进度预览和长按倍速，全部手指松开后才恢复单指手势。
             进入“手势”可选择手机画面滑动方式：“调整视角”转动画面；“调整进度”左右滑动预览时间，松手后跳转。向右快进，向左后退；左半屏上下滑动调整屏幕亮度，右半屏上下滑动调整媒体音量，上滑增大，下滑减小。起始半屏和首次滑动方向会锁定，避免误调。亮度仅对当前播放窗口生效。进度条始终可以拖动。
             长按倍速可设为关闭、1.5×、2×、3×、4×、5×、6×。按住视频临时加速，松手恢复原速度；暂停状态不会被长按自动播放。取消触摸、切后台或切换屏幕也会恢复。手势和倍速设置会保存。
             眼镜模式下，手机底部常驻后退10秒、播放/暂停、前进15秒和按住倍速按钮。长按后退可回退1分钟，长按前进可前进5分钟。空白控制区滑动调整视角、双击切换陀螺仪、长按回正；顶部“回正”也可直接使用。
@@ -121,7 +122,9 @@ class MainActivity : AppCompatActivity() {
 
     private fun showLibrary() {
         val wrap = wrapView ?: return
+        wrap.findViewById<LibraryScrollFrame>(R.id.libraryScroller)?.expand()
         libraryMode = true
+        prefs.edit().putBoolean("homeLibraryMode", true).apply()
         wrap.findViewById<View>(R.id.sites).visibility = View.GONE
         wrap.findViewById<View>(R.id.sitesEmpty).visibility = View.GONE
         wrap.findViewById<View>(R.id.libraryPanel).visibility = View.VISIBLE
@@ -133,6 +136,7 @@ class MainActivity : AppCompatActivity() {
         val wrap = wrapView ?: return
         wrap.findViewById<LibraryScrollFrame>(R.id.libraryScroller)?.expand()
         libraryMode = false
+        prefs.edit().putBoolean("homeLibraryMode", false).apply()
         libraryFoldersOpen = false
         libraryManageOpen = false
         libraryView?.closeMenus()
@@ -476,7 +480,9 @@ class MainActivity : AppCompatActivity() {
         libraryFolder = savedInstanceState?.getString("libraryFolder")
         libraryPath = savedInstanceState?.getString("libraryPath") ?: ""
         updateSitesSummary()
-        if (savedInstanceState?.getBoolean("libraryMode") != false) showLibrary() else showSites()
+        val restoreLibrary = savedInstanceState?.getBoolean("libraryMode")
+            ?: prefs.getBoolean("homeLibraryMode", true)
+        if (restoreLibrary) showLibrary() else showSites()
 
         fun addTypedSite() {
             try {
@@ -580,7 +586,7 @@ class MainActivity : AppCompatActivity() {
         } else if (wrap?.findViewById<View>(R.id.helpOverlay)?.visibility == View.VISIBLE) {
             wrap.findViewById<View>(R.id.helpClose).performClick()
         } else if (!libraryMode) {
-            showLibrary()
+            super.onBackPressed()
         } else {
             if (libraryView?.closeMenus() == true) { renderLibrary(); return }
             if (libraryManageOpen) libraryManageOpen = false

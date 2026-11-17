@@ -35,7 +35,7 @@ internal class LibraryPresentation(
     private val cards = CardAdapter()
 
     init {
-        grid.isNestedScrollingEnabled = true
+        grid.isNestedScrollingEnabled = false
         grid.adapter = cards
         grid.setOnItemClickListener { _, _, position, _ ->
             val card = cards.items[position]

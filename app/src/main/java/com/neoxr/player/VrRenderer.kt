@@ -69,6 +69,7 @@ class VrRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
      * so edge stretching is instead handled by zooming into a narrower frustum.
      */
     @Volatile var fovDeg = 72f
+    @Volatile var flatZoom = 1f
 
     /**
      * Draw one full-screen eye view instead of the stereo pair, on the phone or
@@ -327,6 +328,7 @@ class VrRenderer(private val onSurfaceReady: (SurfaceTexture) -> Unit) :
 
             if (screenAngle == 0) {
                 Matrix.setIdentityM(mvp, 0) // flat: screen-locked, no look-around
+                Matrix.scaleM(mvp, 0, flatZoom, flatZoom, 1f)
             } else {
                 // Single-view phone output uses the actual drawable aspect in either
                 // orientation. SBS output is stretched to the glasses' 16:9 eye panel.

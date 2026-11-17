@@ -1,6 +1,6 @@
 # NeoXR Community Fork / NeoXR 社区二开版
 
-**当前版本：`1.6.0-community.1`（versionCode `7`），发布日期：2026-11-04。**
+**当前版本：`1.6.0-community.4`（versionCode `10`），更新日期：2026-11-17。**
 
 本项目由 [wayhine](https://github.com/wayhine) 维护，基于
 [NeoXR-app/NeoXR](https://github.com/NeoXR-app/NeoXR) 1.5 二次开发，
@@ -11,8 +11,9 @@
 权利归相应贡献者所有。完整保留上游 [GPL-3.0 许可证](LICENSE)，
 本二开版本继续按该许可证发布。详见[版权与权益说明](NOTICE.md)和[版本变更](CHANGELOG.md)。
 
-本版增加本地、SMB、WebDAV 缩略图媒体库，文件夹浏览与排序，中文界面，
-最高 6× 长按倍速，进度／音量／亮度手势和横竖屏控制，并修复眼镜窗口交接与显示恢复。
+本版支持全宽 SBS 眼镜的单眼比例适配、媒体库整页滚动与首页栏目记忆，
+并增加本地、SMB、WebDAV 缩略图媒体库，文件夹浏览与排序，中文界面，
+最高 6× 长按倍速，手机单画面双指缩放，进度／音量／亮度手势和横竖屏控制，并修复眼镜窗口交接与显示恢复。
 完整功能说明与[下载发布页](https://github.com/wayhine/NeoXR/releases)见下方。
 下方演示视频和截图沿用上游素材，界面与本社区版本可能有所不同。
 
