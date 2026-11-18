@@ -183,7 +183,11 @@ class HeadTracker(private val context: Context, private val onStatus: (String) -
         ) PITCH_MOUNT_DEG else 0f
 
     private fun status(s: String) {
-        android.os.Handler(context.mainLooper).post { if (active === this) onStatus(s) }
+        // The USB receiver can report a denial and stop the tracker in the same
+        // main-thread callback. Deliver its reason before stop() clears active.
+        if (android.os.Looper.myLooper() === context.mainLooper) {
+            if (active === this) onStatus(s)
+        } else android.os.Handler(context.mainLooper).post { if (active === this) onStatus(s) }
     }
 
     fun start() {
