@@ -181,7 +181,7 @@ class MainNetworkLibraryTest {
             layout(root, 420, 900)
             root.viewTreeObserver.dispatchOnPreDraw()
             layout(eye, 3840, 1080)
-            val eyeGrid = eye.findViewById<GridView>(R.id.libraryGrid)
+            var eyeGrid = eye.findViewById<GridView>(R.id.libraryGrid)
             assertTrue(eyeGrid.numColumns > grid.numColumns)
             root.findViewById<LibraryScrollFrame>(R.id.libraryScroller).scrollPage(1800)
             root.viewTreeObserver.dispatchOnPreDraw()
@@ -191,6 +191,17 @@ class MainNetworkLibraryTest {
             assertTrue("Phone anchor $first outside glasses range " +
                 "${eyeGrid.firstVisiblePosition}..${eyeGrid.lastVisiblePosition}",
                 first in eyeGrid.firstVisiblePosition..eyeGrid.lastVisiblePosition)
+            // Playback hides the Presentation and returning creates a fresh grid.
+            home.pause().stop().start().resume().visible()
+            shadowOf(Looper.getMainLooper()).idle()
+            layout(root, 420, 900)
+            root.viewTreeObserver.dispatchOnPreDraw()
+            layout(eye, 3840, 1080)
+            root.viewTreeObserver.dispatchOnPreDraw()
+            layout(eye, 3840, 1080)
+            eyeGrid = eye.findViewById(R.id.libraryGrid)
+            assertTrue("The restored phone row must be visible on the glasses",
+                grid.firstVisiblePosition in eyeGrid.firstVisiblePosition..eyeGrid.lastVisiblePosition)
             fun eyePosition(): Int = eyeGrid.firstVisiblePosition / eyeGrid.numColumns *
                 (eyeGrid.getChildAt(0).height + eyeGrid.verticalSpacing) - eyeGrid.getChildAt(0).top
             fun step(px: Int) {
@@ -211,7 +222,10 @@ class MainNetworkLibraryTest {
             step(50000)
             assertEquals(grid.count - 1, eyeGrid.lastVisiblePosition)
             val tailBottom = eyeGrid.getChildAt(eyeGrid.childCount - 1).bottom
-            assertTrue("Last card bottom $tailBottom outside viewport ${eyeGrid.height} (padding ${eyeGrid.paddingBottom})",
+            assertTrue("Last card bottom $tailBottom outside viewport ${eyeGrid.height} (padding ${eyeGrid.paddingBottom}). " +
+                "Phone ${grid.firstVisiblePosition}..${grid.lastVisiblePosition}, bottom " +
+                "${grid.getChildAt(grid.childCount-1).bottom}/${grid.height}, " +
+                "canScroll ${grid.canScrollList(1)}/${grid.canScrollVertically(1)}",
                 tailBottom <= eyeGrid.height && tailBottom >= eyeGrid.height - eyeGrid.paddingBottom - 1)
             step(-50000)
             assertFalse(eyeGrid.canScrollList(-1))

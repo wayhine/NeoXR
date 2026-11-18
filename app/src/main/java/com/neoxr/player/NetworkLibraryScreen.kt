@@ -61,6 +61,7 @@ internal class NetworkLibraryScreen(
             libraryView.closeMenus()
             folderMenu = !folderMenu; manager = false; render()
         }
+        libraryView.restoreScroll(savedInstanceState)
         wrap.findViewById<View>(R.id.libraryManage).setOnClickListener {
             libraryView.closeMenus()
             manager = !manager; folderMenu = false; render()
@@ -224,6 +225,7 @@ internal class NetworkLibraryScreen(
     fun saveState(outState: Bundle) {
         outState.putString("selected", selected); outState.putString("path", path)
         outState.putString("query", query)
+        libraryView.saveScroll(outState)
     }
     fun onBack(): Boolean {
         when {

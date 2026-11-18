@@ -28,23 +28,17 @@ class SmbPreviewProvider : ContentProvider() {
         if (mode != "r") throw FileNotFoundException("Preview is read-only")
         val token = uri.lastPathSegment ?: throw FileNotFoundException("Preview expired")
         val video = files[token] ?: throw FileNotFoundException("Preview expired")
-        try { slots.acquire() } catch (_: InterruptedException) {
-            Thread.currentThread().interrupt()
-            throw FileNotFoundException("Preview cancelled")
-        }
+        acquireSlot()
         var reader: NetworkRangeReader? = null
         var thread: HandlerThread? = null
         val released = AtomicBoolean(false)
         fun release() {
             if (released.compareAndSet(false, true)) {
-                try { reader?.close() } finally { slots.release(); thread?.quitSafely() }
+                try { reader?.close() } finally { releaseSlot(); thread?.quitSafely() }
             }
         }
         try {
-            val input: NetworkRangeReader = if (WebDav.isWebDav(video.uri)) WebDavRangeReader(video.uri, video.size) else {
-                val handle = Smb.openRandomAccess(video.uri)
-                try { SmbRangeReader(handle) } catch (e: Exception) { handle.close(); throw e }
-            }
+            val input = openReader(video)
             reader = input
             val handlerThread = HandlerThread("SMB preview").apply { start() }
             thread = handlerThread
@@ -80,6 +74,18 @@ class SmbPreviewProvider : ContentProvider() {
     companion object {
         private val files = ConcurrentHashMap<String, LibraryVideo>()
         private val slots = Semaphore(2, true)
+        internal fun acquireSlot() {
+            try { slots.acquire() } catch (_: InterruptedException) {
+                Thread.currentThread().interrupt()
+                throw FileNotFoundException("Preview cancelled")
+            }
+        }
+        internal fun releaseSlot() = slots.release()
+        internal fun openReader(video: LibraryVideo): NetworkRangeReader {
+            if (WebDav.isWebDav(video.uri)) return WebDavRangeReader(video.uri, video.size)
+            val handle = Smb.openRandomAccess(video.uri)
+            return try { SmbRangeReader(handle) } catch (e: Exception) { handle.close(); throw e }
+        }
         fun uriFor(context: Context, video: LibraryVideo): Uri {
             val key = LocalLibraryRepository.cacheId(video.cacheKey)
             files[key] = video

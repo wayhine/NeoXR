@@ -163,15 +163,36 @@ internal class LandscapeLibraryView(
             (phoneGrid.paddingTop - phoneGrid.getChildAt(0).top).toDouble() / srcPitch
         val fraction = when {
             srcRange <= 0 || !phoneGrid.canScrollList(-1) -> 0.0
-            !phoneGrid.canScrollList(1) -> 1.0
+            !phoneGrid.canScrollList(1) ||
+                (phoneGrid.lastVisiblePosition == phoneGrid.count - 1 && !phoneGrid.canScrollVertically(1)) -> 1.0
             else -> (srcRow / srcRange).coerceIn(0.0, 1.0)
         }
-        val dstRow = fraction * range(eyeGrid, dstCols, dstPitch)
+        if (fraction == 1.0) {
+            val last = eyeGrid.count - 1
+            val footer = eyeGrid.getChildAt(last - eyeGrid.firstVisiblePosition)
+            val bottom = eyeGrid.height - eyeGrid.paddingBottom
+            if (footer == null) {
+                val lastRow = last / dstCols * dstCols
+                eyeGrid.setSelectionFromTop(lastRow, bottom - dstPitch + eyeGrid.verticalSpacing - eyeGrid.paddingTop)
+            } else if (footer.bottom > bottom) {
+                eyeGrid.scrollListBy(footer.bottom - bottom)
+            }
+            return
+        }
+        val dstRange = range(eyeGrid, dstCols, dstPitch)
+        // Different column counts and viewport heights can make equal percentages
+        // point at different videos. Follow the actual adapter position on return
+        // from playback and during scrolling, clamped at the end of the eye list.
+        val dstRow = if (phoneGrid.id == R.id.libraryGrid) when (fraction) {
+            0.0 -> 0.0
+            else -> (srcRow * srcCols / dstCols).coerceIn(0.0, dstRange)
+        } else fraction * dstRange
         val dstFirst = dstRow.toInt() * dstCols
         val top = -((dstRow - dstRow.toInt()) * dstPitch).roundToInt()
         val actual = eyeGrid.getChildAt(0)
-        val delta = ((dstFirst - eyeGrid.firstVisiblePosition) / dstCols) * dstPitch +
-            actual.top - eyeGrid.paddingTop - top
+        val target = eyeGrid.getChildAt(dstFirst - eyeGrid.firstVisiblePosition)
+        val actualTop = target?.top ?: (actual.top + (dstFirst - eyeGrid.firstVisiblePosition) / dstCols * dstPitch)
+        val delta = actualTop - eyeGrid.paddingTop - top
         if (delta == 0) return
         // Normal drags retain recycled rows. Only a viewport-sized jump (e.g. a
         // search reset) needs a new layout anchored at a specific adapter position.
@@ -219,6 +240,7 @@ internal class LandscapeLibraryView(
         source?.findViewById<LibraryScrollFrame>(R.id.libraryScroller)?.let { src ->
             getChildAt(0)?.findViewById<LibraryScrollFrame>(R.id.libraryScroller)?.followHeader(src.collapsedFraction)
         }
+        gridScrolls.forEach { it() }
         removeCallbacks(syncMeasuredGrids)
         post(syncMeasuredGrids)
     }
