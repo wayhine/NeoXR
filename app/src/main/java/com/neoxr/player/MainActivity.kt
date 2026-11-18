@@ -488,6 +488,7 @@ class MainActivity : AppCompatActivity() {
                 .setAction(Intent.ACTION_VIEW).setData(android.net.Uri.parse(video.uri))) })
         libraryFolder = savedInstanceState?.getString("libraryFolder")
         libraryPath = savedInstanceState?.getString("libraryPath") ?: ""
+        libraryView?.restoreScroll(savedInstanceState)
         updateSitesSummary()
         val restoreLibrary = savedInstanceState?.getBoolean("libraryMode")
             ?: prefs.getBoolean("homeLibraryMode", true)
@@ -631,6 +632,7 @@ class MainActivity : AppCompatActivity() {
         outState.putBoolean("libraryMode", libraryMode)
         outState.putString("libraryFolder", libraryFolder)
         outState.putString("libraryPath", libraryPath)
+        libraryView?.saveScroll(outState)
         super.onSaveInstanceState(outState)
     }
 

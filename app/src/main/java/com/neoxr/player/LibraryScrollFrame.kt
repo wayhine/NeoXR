@@ -19,6 +19,7 @@ class LibraryScrollFrame @JvmOverloads constructor(context: Context, attrs: Attr
     FrameLayout(context, attrs) {
     private var headerOffset = 0
     private var headerHeight = 0
+    private var pendingHeader: Float? = null
     private val fling = OverScroller(context)
     private val configuration = ViewConfiguration.get(context)
     private var lastFlingY = 0
@@ -35,10 +36,18 @@ class LibraryScrollFrame @JvmOverloads constructor(context: Context, attrs: Attr
 
     fun expand() {
         stopScroll()
+        pendingHeader = null
         setHeaderOffset(0)
     }
 
     fun stopScroll() = fling.abortAnimation()
+
+    internal val collapsedFraction get() = pendingHeader
+        ?: if (headerHeight == 0) 0f else headerOffset.toFloat() / headerHeight
+    internal fun followHeader(fraction: Float) {
+        if (headerHeight == 0) pendingHeader = fraction
+        else setHeaderOffset(kotlin.math.round(fraction * headerHeight).toInt())
+    }
 
     private fun setHeaderOffset(value: Int): Int {
         val before = headerOffset
@@ -118,6 +127,11 @@ class LibraryScrollFrame @JvmOverloads constructor(context: Context, attrs: Attr
 
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
+        val fraction = pendingHeader
+        if (fraction != null && headerHeight > 0) {
+            pendingHeader = null
+            followHeader(fraction)
+        }
         setHeaderOffset(headerOffset)
     }
 

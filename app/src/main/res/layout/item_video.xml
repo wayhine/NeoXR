@@ -30,6 +30,20 @@
             android:textSize="8sp" />
 
         <TextView
+            android:id="@+id/videoLastOpened"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="top|start"
+            android:layout_margin="6dp"
+            android:background="@drawable/bg_badge"
+            android:paddingHorizontal="5dp"
+            android:paddingVertical="2dp"
+            android:text="@string/library_last_opened"
+            android:textColor="#FFFFFF"
+            android:textSize="9sp"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/videoDuration"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"

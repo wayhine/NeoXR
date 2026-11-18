@@ -23,6 +23,7 @@ import java.util.concurrent.atomic.AtomicInteger
 /** Same cards as the feed browser, with bounded background work for local video metadata. */
 class LocalVideoAdapter(private val activity: Activity) : BaseAdapter() {
     var videos: List<LibraryVideo> = emptyList()
+    internal var lastOpened: String? = null
     private val context = activity.applicationContext
     private val prefs = context.getSharedPreferences("local_video_metadata", Context.MODE_PRIVATE)
     private val worker = Executors.newFixedThreadPool(2)
@@ -42,6 +43,7 @@ class LocalVideoAdapter(private val activity: Activity) : BaseAdapter() {
     private val notifyMetadata = Runnable { notifyScheduled = false; if (!closed) onMetadataChanged?.invoke() }
     private val saveMetadata = Runnable { flushDurations() }
     private val corner = (14 * activity.resources.displayMetrics.density).toInt()
+    private var thumbnailLoaderRegistered = false
 
     override fun getCount() = videos.size
     override fun getItem(position: Int) = videos[position]
@@ -58,11 +60,19 @@ class LocalVideoAdapter(private val activity: Activity) : BaseAdapter() {
             if (time > 0) parts.add(java.text.SimpleDateFormat("yyyy-MM-dd", java.util.Locale.getDefault()).format(java.util.Date(time)))
             text = parts.joinToString(" · "); visibility = if (parts.isEmpty()) View.GONE else View.VISIBLE
         }
-        view.contentDescription = video.name
+        val recent = lastOpened?.let { LocalLibraryRepository.cacheId(video.uri) == it } == true
+        view.findViewById<TextView>(R.id.videoLastOpened).visibility = if (recent) View.VISIBLE else View.GONE
+        view.contentDescription = if (recent) "${video.name}，${activity.getString(R.string.library_last_opened)}" else video.name
         val thumb = view.findViewById<ImageView>(R.id.videoThumb)
-        Glide.with(activity).asBitmap().load(previewUri(video))
-            .signature(ObjectKey(if (NetworkMedia.isNetwork(video.uri)) LocalLibraryRepository.cacheId(video.cacheKey) else video.cacheKey))
-            .frame(1_000_000L)
+        val network = NetworkMedia.isNetwork(video.uri)
+        if (network && !thumbnailLoaderRegistered) {
+            NetworkThumbnail.register(context)
+            thumbnailLoaderRegistered = true
+        }
+        val request = Glide.with(activity).asBitmap()
+        val source = if (network) request.load(NetworkThumbnail(video)) else request.load(Uri.parse(video.uri))
+            .signature(ObjectKey(video.cacheKey)).frame(1_000_000L)
+        source
             .diskCacheStrategy(DiskCacheStrategy.RESOURCE)
             .placeholder(R.drawable.ic_video_placeholder).error(R.drawable.ic_video_placeholder)
             .transform(CenterCrop(), RoundedCorners(corner)).into(thumb)

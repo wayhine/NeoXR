@@ -103,4 +103,46 @@ class LibraryPresentationTest {
             }
         }
     }
+
+    @Test fun returningFromPlaybackKeepsTheVisibleRowAndMarksTheLastOpenedVideo() {
+        Fixture().use { f ->
+            f.wrap.findViewById<View>(R.id.libraryFilesView).performClick()
+            val videos = List(48) { i ->
+                LibraryVideo("content://test/clip/$i", "clip-%02d.mp4".format(i), "", 1234, 100)
+            }
+            val entries = listOf(LibraryFolder("root", "媒体库", videos))
+            val grid = f.wrap.findViewById<GridView>(R.id.libraryGrid)
+            fun layout() {
+                f.wrap.measure(View.MeasureSpec.makeMeasureSpec(400, View.MeasureSpec.EXACTLY),
+                    View.MeasureSpec.makeMeasureSpec(520, View.MeasureSpec.EXACTLY))
+                f.wrap.layout(0, 0, 400, 520)
+            }
+            f.view.render(entries, null, "", "")
+            layout()
+            grid.setSelectionFromTop(16, -8)
+            layout()
+            val first = grid.firstVisiblePosition
+            val top = grid.getChildAt(0).top
+            assertTrue(first > 0)
+            val selected = first + 1
+            grid.performItemClick(null, selected, selected.toLong())
+            assertEquals(videos[selected], f.played)
+            f.view.suspend()
+            f.view.resume()
+            f.view.render(entries, null, "", "")
+            layout()
+            assertEquals(first, grid.firstVisiblePosition)
+            assertEquals(top, grid.getChildAt(0).top)
+            val marked = grid.adapter.getView(selected, null, grid)
+            assertEquals(View.VISIBLE, marked.findViewById<View>(R.id.videoLastOpened).visibility)
+            val recycled = grid.adapter.getView(selected + 1, marked, grid)
+            assertEquals(View.GONE, recycled.findViewById<View>(R.id.videoLastOpened).visibility)
+            f.view.close()
+            f.view = f.makeView()
+            f.view.render(entries, null, "", "")
+            val reopened = grid.adapter.getView(selected, null, grid)
+            assertEquals(View.VISIBLE, reopened.findViewById<View>(R.id.videoLastOpened).visibility)
+        }
+    }
+
 }

@@ -2,6 +2,7 @@ package com.neoxr.player
 
 import android.app.Activity
 import android.content.Context
+import android.os.Bundle
 import android.text.format.Formatter
 import android.view.View
 import android.view.ViewGroup
@@ -26,6 +27,7 @@ internal class LibraryPresentation(
     private var sort = LibrarySort.saved(prefs.getString("sort", null))
     private var descending = prefs.getBoolean("descending", false)
     private var sortOpen = false
+    private val page: LibraryScrollFrame? = wrap.findViewById<LibraryScrollFrame>(R.id.libraryScroller)
     private var preparing = false
     private var active = true
     private var scope = emptyList<LibraryVideo>()
@@ -33,13 +35,28 @@ internal class LibraryPresentation(
     private var path = ""
     private val grid = wrap.findViewById<GridView>(R.id.libraryGrid)
     private val cards = CardAdapter()
+    private data class ScrollAnchor(val key: String, val top: Int, val header: Float)
+    private var returnAnchor: ScrollAnchor? = null
 
     init {
+        metadata.lastOpened = prefs.getString("lastOpened", null)
         grid.isNestedScrollingEnabled = false
         grid.adapter = cards
         grid.setOnItemClickListener { _, _, position, _ ->
             val card = cards.items[position]
-            if (card.directory) { sortOpen = false; onNavigate(card.root, card.path) } else onPlay(card.video!!)
+            if (card.directory) {
+                sortOpen = false
+                returnAnchor = null
+                onNavigate(card.root, card.path)
+            } else {
+                val video = checkNotNull(card.video)
+                page?.stopScroll()
+                returnAnchor = currentAnchor()
+                metadata.lastOpened = LocalLibraryRepository.cacheId(video.uri)
+                prefs.edit().putString("lastOpened", metadata.lastOpened).apply()
+                cards.notifyDataSetChanged()
+                onPlay(video)
+            }
         }
         wrap.findViewById<View>(R.id.libraryFilesView).setOnClickListener { changeView(false) }
         wrap.findViewById<View>(R.id.libraryFolderView).setOnClickListener { changeView(true) }
@@ -98,6 +115,16 @@ internal class LibraryPresentation(
         val entries = LibraryCatalog.sorted(LibraryCatalog.cards(folders, root, directory, query, folderView),
             sort, descending, metadata::cachedDuration)
         cards.setItems(entries)
+        if (entries.isNotEmpty()) {
+            returnAnchor?.let { anchor ->
+                val index = cards.positionOf(anchor.key)
+                if (index >= 0) {
+                    grid.setSelectionFromTop(index, anchor.top)
+                    page?.followHeader(anchor.header)
+                }
+            }
+            returnAnchor = null
+        }
         listOf(R.id.libraryFilesView to !folderView, R.id.libraryFolderView to folderView).forEach { (id, active) ->
             wrap.findViewById<View>(id).setBackgroundResource(if (active) R.drawable.bg_row_active else R.drawable.bg_input)
         }
@@ -130,16 +157,41 @@ internal class LibraryPresentation(
     fun resume() { active = true }
     fun suspend() { active = false; metadata.cancelDurationWarmup() }
 
+    private fun currentAnchor(): ScrollAnchor? {
+        val first = grid.getChildAt(0) ?: return null
+        val key = cards.keyAt(grid.firstVisiblePosition) ?: return null
+        return ScrollAnchor(key, first.top - grid.paddingTop, page?.collapsedFraction ?: 0f)
+    }
+
+    fun saveScroll(state: Bundle) {
+        val anchor = returnAnchor ?: currentAnchor() ?: return
+        state.putString("libraryScrollKey", anchor.key)
+        state.putInt("libraryScrollTop", anchor.top)
+        state.putFloat("libraryHeader", anchor.header)
+    }
+
+    fun restoreScroll(state: Bundle?) {
+        val key = state?.getString("libraryScrollKey") ?: return
+        returnAnchor = ScrollAnchor(key, state.getInt("libraryScrollTop"), state.getFloat("libraryHeader"))
+    }
+
     private inner class CardAdapter : BaseAdapter() {
         var items = emptyList<LibraryCard>()
             private set
+        private var keys = emptyList<String>()
         private var videoPositions = emptyMap<String, Int>()
         fun setItems(value: List<LibraryCard>) {
+            if (items == value) return
             items = value
+            keys = value.map { card ->
+                LocalLibraryRepository.cacheId(card.video?.uri ?: "folder:${card.root}/${card.path}")
+            }
             metadata.videos = value.mapNotNull { it.video }
             videoPositions = metadata.videos.mapIndexed { index, video -> video.uri to index }.toMap()
             notifyDataSetChanged()
         }
+        fun keyAt(position: Int): String? = keys.getOrNull(position)
+        fun positionOf(key: String): Int = keys.indexOf(key)
         override fun getCount() = items.size
         override fun getItem(position: Int) = items[position]
         override fun getItemId(position: Int) = position.toLong()

@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="library_last_opened">上次打开</string>
     <string name="view_files">视频视图</string>
     <string name="view_folders">文件夹视图</string>
     <string name="library_sort">排序 ▾</string>
