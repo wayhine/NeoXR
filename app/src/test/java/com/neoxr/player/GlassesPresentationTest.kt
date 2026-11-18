@@ -94,9 +94,12 @@ class GlassesPresentationTest {
         val window = Window(activity.get(), display(activity.get()), failures = 2)
         var failed = 0
         val output = GlassesPresentation(activity.get(), window, {}, { failed++ })
+        var starts = 0
+        output.onShown = { assertTrue(window.isShowing); starts++ }
         activity.start().resume().visible()
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(2))
         assertEquals(3, window.attempts)
+        assertEquals(1, starts)
         assertTrue(window.isShowing)
         assertEquals(0, failed)
         output.close()
@@ -108,6 +111,7 @@ class GlassesPresentationTest {
         val window = Window(activity.get(), display(activity.get()), failures = 10)
         var failed = 0
         val output = GlassesPresentation(activity.get(), window, {}, { failed++ })
+        output.onShown = { throw AssertionError("No sensor should start after a display failure") }
         activity.start().resume().visible()
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofSeconds(10))
         assertEquals(3, window.attempts)

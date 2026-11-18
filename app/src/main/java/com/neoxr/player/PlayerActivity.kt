@@ -63,7 +63,8 @@ class PlayerActivity : Activity(), SensorEventListener {
     private lateinit var outputWatcher: GlassesWatcher
     private var restorePlaying = true
     private var lifecyclePaused = false
-    private var restartHead = false
+    // A new video opts in; releasing the sensor in the background is not a user opt-out.
+    private var wantsHeadTracking = true
     private var resumePos = 0L // carried across output switches (plug/unplug recreate)
 
     // named sbsOverlay, not "overlay": inside any View.apply{} scope a bare `overlay`
@@ -217,7 +218,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         fullscreenOverCutout()
         resumePos = savedInstanceState?.getLong("pos") ?: 0L
         restorePlaying = savedInstanceState?.getBoolean("playing", true) ?: true
-        restartHead = savedInstanceState?.getBoolean("headTracking", false) ?: false
+        wantsHeadTracking = savedInstanceState?.getBoolean("headTracking", true) ?: true
         getSharedPreferences("neoxr", MODE_PRIVATE).let { p ->
             subSizeSp = p.getInt("subSize", 26)
             subColor = p.getInt("subColor", 0xFFFFFFFF.toInt())
@@ -370,7 +371,11 @@ class PlayerActivity : Activity(), SensorEventListener {
                     onFailure = { e ->
                         fallbackToPhone(root, e)
                         applyPlayerDims()
-                    })
+                    }).apply {
+                        onShown = {
+                            if (wantsHeadTracking && !headMode && !isFinishing) startHeadTracking()
+                        }
+                    }
             } catch (e: Exception) {
                 fallbackToPhone(root, e)
             }
@@ -733,6 +738,7 @@ class PlayerActivity : Activity(), SensorEventListener {
     }
 
     private fun fallbackToPhone(root: FrameLayout, error: Exception) {
+        releaseHeadTracking()
         android.util.Log.e("NeoXR", "presentation FAILED: $error", error)
         outputWindow?.close()
         outputWindow = null
@@ -769,7 +775,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         super.onSaveInstanceState(outState)
         outState.putLong("pos", player?.currentPosition ?: resumePos)
         outState.putBoolean("playing", if (lifecyclePaused) restorePlaying else player?.playWhenReady ?: restorePlaying)
-        outState.putBoolean("headTracking", headMode || restartHead)
+        outState.putBoolean("headTracking", wantsHeadTracking)
         outState.putBoolean("monoOutput", renderer.monoOutput)
         outState.putBoolean("outputOnGlasses", glassesDisplay != null)
         outState.putInt("outputWidth", outputMode?.physicalWidth ?: 0)
@@ -1994,14 +2000,28 @@ class PlayerActivity : Activity(), SensorEventListener {
      * composites its own warp on top of ours. Long-press recenter works as usual.
      */
     private fun toggleHead() {
+        if (presentation?.isShowing != true) return
+        wantsHeadTracking = !headMode
         if (headMode) {
-            headMode = false
-            phoneNeedsCenter = true
-            headTracker?.stop()
-            headTracker = null
-            btnHead?.let { mark(it, false) }
+            releaseHeadTracking()
             sbsOverlay.flash("头控已关闭")
         } else {
+            startHeadTracking()
+        }
+        showControls()
+    }
+
+    private fun releaseHeadTracking() {
+        if (!headMode) return
+        headMode = false
+        phoneNeedsCenter = true
+        headTracker?.stop()
+        headTracker = null
+        btnHead?.let { mark(it, false) }
+    }
+
+    private fun startHeadTracking() {
+        try {
             headMode = true
             btnHead?.let { mark(it, true) }
             var firstHeadSample = true
@@ -2025,18 +2045,19 @@ class PlayerActivity : Activity(), SensorEventListener {
                 // tracker died (no network / stream lost): drop back to the phone
                 // gyro automatically, otherwise Head mode leaves the view frozen
                 onStopped = {
-                    if (headMode) {
-                        headMode = false
-                        phoneNeedsCenter = true
-                        headTracker?.stop()
-                        headTracker = null
-                        btnHead?.let { mark(it, false) }
+                    if (headTracker === this) {
+                        wantsHeadTracking = false
+                        releaseHeadTracking()
                     }
                 }
-                start()
             }
+            headTracker?.start()
+        } catch (e: Exception) {
+            wantsHeadTracking = false
+            releaseHeadTracking()
+            android.util.Log.w("NeoXR", "Head tracking unavailable", e)
+            sbsOverlay.flash("头控暂不可用，已切回手机陀螺仪")
         }
-        showControls()
     }
 
     private fun applyView() {
@@ -2190,17 +2211,12 @@ class PlayerActivity : Activity(), SensorEventListener {
         sensor?.let { sm.registerListener(this, it, SensorManager.SENSOR_DELAY_GAME) }
         handler.post(progressTick)
         fullscreenOverCutout()
-        if (restartHead && glassesDisplay != null && !headMode) {
-            restartHead = false
-            toggleHead()
-        }
     }
 
     override fun onPause() {
         phonePinchZoom?.cancel()
         restorePlaying = player?.playWhenReady ?: restorePlaying
         lifecyclePaused = true
-        restartHead = headMode
         cancelHoldPlayback()
         physicalRotation.disable()
         if (rotationObserverRegistered) {
@@ -2255,13 +2271,7 @@ class PlayerActivity : Activity(), SensorEventListener {
         super.onStop()
         // release the glasses' IMU socket while off screen: it accepts one client,
         // and holding it here would deny head tracking to the next player opened
-        if (headMode) {
-            headMode = false
-            phoneNeedsCenter = true
-            headTracker?.stop()
-            headTracker = null
-            btnHead?.let { mark(it, false) }
-        }
+        releaseHeadTracking()
     }
 
     companion object {
