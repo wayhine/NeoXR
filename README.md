@@ -214,15 +214,15 @@ To use it:
    permission to reach them over USB — allow it. In Anchor mode the glasses hold the image in space
    themselves, so their motion is added on top of the app's and the picture moves
    twice. Recent firmware is required.
-2. Open a video and press **Head** in the left column. The button appears only when
-   the glasses are connected.
+2. Open a video with the glasses connected. Head tracking starts automatically once
+   the player opens on the glasses. Use **Head** to turn it off for this video or retry.
 3. Look straight ahead and long-press to center the view.
 
 Press **Head** again to go back to the phone gyroscope.
 
 **RayNeo GT** also supports USB head tracking in this release. It was tested with
 an OPPO Find X9 Pro using the RayNeo runtime included in the APK. Allow USB access,
-enable **Head**, then center the view. See the [GT integration notes](docs/rayneo-gt-head-tracking.md)
+then center the view. See the [GT integration notes](docs/rayneo-gt-head-tracking.md)
 for the tested runtime and hardware details.
 
 Phone and glasses sensitivities are saved separately under **PIC / 画质**. Phone

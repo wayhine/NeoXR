@@ -15,6 +15,7 @@ internal class GlassesPresentation(
     private val onDismissed: () -> Unit,
     private val onFailure: (Exception) -> Unit
 ) : AutoCloseable {
+    var onShown: (() -> Unit)? = null
     private val handler = Handler(Looper.getMainLooper())
     private var resumed = false
     private var closed = false
@@ -34,7 +35,9 @@ internal class GlassesPresentation(
                 val transient = e is WindowManager.InvalidDisplayException || e is WindowManager.BadTokenException
                 if (transient && attempts < 3) handler.postDelayed(this, 400L * attempts)
                 else { close(); onFailure(e) }
+                return
             }
+            onShown?.invoke()
         }
     }
     private val lifecycle = object : Application.ActivityLifecycleCallbacks {
