@@ -34,12 +34,14 @@
             android:name=".WebViewActivity"
             android:configChanges="orientation|screenSize|keyboardHidden" />
 
-        <!-- exported + filters: the player accepts local videos from file managers
+        <!-- Start in the caller's orientation; PlayerActivity then applies the
+             phone/controller preference once it knows the output display.
+             exported + filters: the player accepts local videos from file managers
              ("Open with") and the system share sheet -->
         <activity
             android:name=".PlayerActivity"
             android:exported="true"
-            android:screenOrientation="landscape"
+            android:screenOrientation="behind"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:theme="@android:style/Theme.Material.NoActionBar.Fullscreen">
             <intent-filter>

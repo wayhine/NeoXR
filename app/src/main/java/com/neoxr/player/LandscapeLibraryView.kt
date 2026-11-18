@@ -21,6 +21,8 @@ internal class LandscapeLibraryView(
     private var lastPhoneWidth = 0
     private val bindings = mutableListOf<() -> Unit>()
     private val lists = mutableListOf<AbsListView>()
+    private val gridScrolls = mutableListOf<() -> Unit>()
+    private val syncMeasuredGrids = Runnable { gridScrolls.forEach { it() } }
     private var observer: ViewTreeObserver? = null
     private val beforeDraw = ViewTreeObserver.OnPreDrawListener { sync(); true }
 
@@ -46,6 +48,8 @@ internal class LandscapeLibraryView(
 
     private fun clearPage() {
         bindings.clear()
+        removeCallbacks(syncMeasuredGrids)
+        gridScrolls.clear()
         lists.forEach { it.adapter = null }
         lists.clear()
         removeAllViews()
@@ -92,7 +96,10 @@ internal class LandscapeLibraryView(
         when {
             a is AbsListView && b is AbsListView -> {
                 lists += b
-                var lastFirst = -1; var lastTop = Int.MIN_VALUE; var lastCols = 0; var visible = false
+                val followGrid: (() -> Unit)? = if (a is GridView && b is GridView)
+                    ({ followGridScroll(a, b) }) else null
+                if (followGrid != null) gridScrolls += followGrid
+                var lastFirst = -1; var lastTop = Int.MIN_VALUE; var visible = false
                 bindings += {
                     if (b.adapter !== a.adapter) {
                         b.adapter = a.adapter
@@ -101,13 +108,13 @@ internal class LandscapeLibraryView(
                     val showing = a.isShown
                     if (showing && !visible) { b.invalidateViews(); lastFirst = -1 }
                     visible = showing
-                    if (showing && a.childCount > 0) {
+                    if (showing && followGrid != null) followGrid()
+                    else if (showing && a.childCount > 0) {
                         val first = a.firstVisiblePosition
                         val top = a.getChildAt(0).top - a.paddingTop
-                        val cols = (b as? GridView)?.numColumns?.coerceAtLeast(1) ?: 1
-                        if (first != lastFirst || top != lastTop || cols != lastCols) {
-                            b.setSelectionFromTop(first / cols * cols, top)
-                            lastFirst = first; lastTop = top; lastCols = cols
+                        if (first != lastFirst || top != lastTop) {
+                            b.setSelectionFromTop(first, top)
+                            lastFirst = first; lastTop = top
                         }
                     }
                 }
@@ -130,6 +137,47 @@ internal class LandscapeLibraryView(
                 for (i in 0 until minOf(a.childCount, b.childCount)) bind(a.getChildAt(i), b.getChildAt(i))
             }
         }
+    }
+
+    /** Map continuous scroll progress, rather than copying the phone's within-row
+     * offset (which resets to zero at every phone row even if the eye is on the same row). */
+    private fun followGridScroll(phoneGrid: GridView, eyeGrid: GridView) {
+        if (!phoneGrid.isShown || !eyeGrid.isShown || phoneGrid.childCount == 0 || eyeGrid.childCount == 0 ||
+            phoneGrid.count != eyeGrid.count || eyeGrid.adapter !== phoneGrid.adapter) return
+        fun pitch(grid: GridView, cols: Int): Int {
+            val row = grid.getChildAt(0)
+            return (grid.getChildAt(cols)?.let { it.top - row.top }
+                ?: (row.height + grid.verticalSpacing)).coerceAtLeast(1)
+        }
+        fun range(grid: GridView, cols: Int, step: Int): Double {
+            val rows = (grid.count + cols - 1) / cols
+            return (rows - (grid.height - grid.paddingTop - grid.paddingBottom + grid.verticalSpacing).toDouble() / step)
+                .coerceAtLeast(0.0)
+        }
+        val srcCols = phoneGrid.numColumns.coerceAtLeast(1)
+        val dstCols = eyeGrid.numColumns.coerceAtLeast(1)
+        val srcPitch = pitch(phoneGrid, srcCols)
+        val dstPitch = pitch(eyeGrid, dstCols)
+        val srcRange = range(phoneGrid, srcCols, srcPitch)
+        val srcRow = phoneGrid.firstVisiblePosition / srcCols +
+            (phoneGrid.paddingTop - phoneGrid.getChildAt(0).top).toDouble() / srcPitch
+        val fraction = when {
+            srcRange <= 0 || !phoneGrid.canScrollList(-1) -> 0.0
+            !phoneGrid.canScrollList(1) -> 1.0
+            else -> (srcRow / srcRange).coerceIn(0.0, 1.0)
+        }
+        val dstRow = fraction * range(eyeGrid, dstCols, dstPitch)
+        val dstFirst = dstRow.toInt() * dstCols
+        val top = -((dstRow - dstRow.toInt()) * dstPitch).roundToInt()
+        val actual = eyeGrid.getChildAt(0)
+        val delta = ((dstFirst - eyeGrid.firstVisiblePosition) / dstCols) * dstPitch +
+            actual.top - eyeGrid.paddingTop - top
+        if (delta == 0) return
+        // Normal drags retain recycled rows. Only a viewport-sized jump (e.g. a
+        // search reset) needs a new layout anchored at a specific adapter position.
+        if (kotlin.math.abs(delta) < (eyeGrid.height - eyeGrid.paddingTop - eyeGrid.paddingBottom - 1))
+            eyeGrid.scrollListBy(delta)
+        else eyeGrid.setSelectionFromTop(dstFirst, top)
     }
 
     private fun copyRow(v: View): View {
@@ -171,6 +219,8 @@ internal class LandscapeLibraryView(
         source?.findViewById<LibraryScrollFrame>(R.id.libraryScroller)?.let { src ->
             getChildAt(0)?.findViewById<LibraryScrollFrame>(R.id.libraryScroller)?.followHeader(src.collapsedFraction)
         }
+        removeCallbacks(syncMeasuredGrids)
+        post(syncMeasuredGrids)
     }
 
     override fun dispatchDraw(canvas: Canvas) {

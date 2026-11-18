@@ -68,6 +68,8 @@ class MainNetworkLibraryTest {
             tap(1)
             val launched = shadowOf(phone).nextStartedActivity
             assertEquals(PlayerActivity::class.java.name, launched.component?.className)
+            assertEquals("The starting window must retain the portrait library orientation",
+                ActivityInfo.SCREEN_ORIENTATION_BEHIND, phone.packageManager.getActivityInfo(launched.component!!, 0).screenOrientation)
             assertEquals(phone.packageName, launched.component?.packageName)
             assertEquals("$videos/42", launched.dataString)
             assertNull(shadowOf(phone).nextStartedActivity)
@@ -189,6 +191,30 @@ class MainNetworkLibraryTest {
             assertTrue("Phone anchor $first outside glasses range " +
                 "${eyeGrid.firstVisiblePosition}..${eyeGrid.lastVisiblePosition}",
                 first in eyeGrid.firstVisiblePosition..eyeGrid.lastVisiblePosition)
+            fun eyePosition(): Int = eyeGrid.firstVisiblePosition / eyeGrid.numColumns *
+                (eyeGrid.getChildAt(0).height + eyeGrid.verticalSpacing) - eyeGrid.getChildAt(0).top
+            fun step(px: Int) {
+                root.findViewById<LibraryScrollFrame>(R.id.libraryScroller).scrollPage(px)
+                root.viewTreeObserver.dispatchOnPreDraw()
+                layout(eye, 3840, 1080)
+            }
+            for (direction in listOf(1, -1)) {
+                val start = eyePosition()
+                repeat(90) {
+                    val before = eyePosition()
+                    step(11 * direction)
+                    val advance = (eyePosition() - before) * direction
+                    assertTrue("Eye moved backwards or jumped a row: $advance", advance in 0..15)
+                }
+                assertTrue((eyePosition() - start) * direction > 100)
+            }
+            step(50000)
+            assertEquals(grid.count - 1, eyeGrid.lastVisiblePosition)
+            val tailBottom = eyeGrid.getChildAt(eyeGrid.childCount - 1).bottom
+            assertTrue("Last card bottom $tailBottom outside viewport ${eyeGrid.height} (padding ${eyeGrid.paddingBottom})",
+                tailBottom <= eyeGrid.height && tailBottom >= eyeGrid.height - eyeGrid.paddingBottom - 1)
+            step(-50000)
+            assertFalse(eyeGrid.canScrollList(-1))
         } finally { home.pause().stop().destroy() }
     }
 
