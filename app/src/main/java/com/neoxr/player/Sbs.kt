@@ -203,7 +203,7 @@ class SbsFrameLayout(context: Context) : FrameLayout(context) {
     companion object {
         fun attach(activity: Activity, layoutRes: Int): SbsFrameLayout = SbsFrameLayout(activity).also {
             activity.layoutInflater.inflate(layoutRes, it, true)
-            LibraryMirror.attach(activity, it)
+            LibraryMirror.attach(activity, it, layoutRes)
         }
     }
 }

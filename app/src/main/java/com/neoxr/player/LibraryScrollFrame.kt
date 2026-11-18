@@ -40,6 +40,9 @@ class LibraryScrollFrame @JvmOverloads constructor(context: Context, attrs: Attr
 
     fun stopScroll() = fling.abortAnimation()
 
+    internal val collapsedFraction get() = if (headerHeight == 0) 0f else headerOffset.toFloat() / headerHeight
+    internal fun followHeader(fraction: Float) { setHeaderOffset(kotlin.math.round(fraction * headerHeight).toInt()) }
+
     private fun setHeaderOffset(value: Int): Int {
         val before = headerOffset
         headerOffset = value.coerceIn(0, headerHeight)

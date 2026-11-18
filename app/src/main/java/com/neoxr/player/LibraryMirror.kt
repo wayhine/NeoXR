@@ -16,20 +16,22 @@ import android.view.PixelCopy
 import android.view.View
 import android.view.ViewTreeObserver
 import android.view.WindowManager
+import android.view.Gravity
+import android.widget.FrameLayout
 import kotlin.math.roundToInt
 
 internal object LibraryMirror {
-    fun attach(activity: Activity, content: SbsFrameLayout) {
+    fun attach(activity: Activity, content: SbsFrameLayout, layoutRes: Int? = null) {
         activity.fullscreenOverCutout()
         val display = Glasses.find(activity)
         activity.requestedOrientation = if (display == null) ActivityInfo.SCREEN_ORIENTATION_UNSPECIFIED
-            else ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+            else ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
         val prefs = activity.getSharedPreferences("neoxr", Context.MODE_PRIVATE)
         content.sbs = display == null && prefs.getBoolean("menuSbs", false)
         content.setBackgroundColor(activity.getColor(R.color.backdrop))
-        activity.setContentView(content)
         val watcher = GlassesWatcher(activity, display) { activity.recreate() }
         if (display == null) {
+            activity.setContentView(content)
             content.onLongPressToggle = {
                 content.sbs = !content.sbs
                 prefs.edit().putBoolean("menuSbs", content.sbs).apply()
@@ -46,10 +48,32 @@ internal object LibraryMirror {
             @Suppress("DEPRECATION")
             decorView.systemUiVisibility = activity.window.decorView.systemUiVisibility
         }
-        val mirror = LibraryMirrorView(window.context, activity, content,
-            VideoGeometry.glassesEyeAspect(mode.physicalWidth, mode.physicalHeight),
-            prefs.getBoolean(modeKey, VideoGeometry.isFullSbs(mode.physicalWidth, mode.physicalHeight)))
-        window.setContentView(mirror)
+        val aspect = VideoGeometry.glassesEyeAspect(mode.physicalWidth, mode.physicalHeight)
+        val initialStereo = prefs.getBoolean(modeKey, VideoGeometry.isFullSbs(mode.physicalWidth, mode.physicalHeight))
+        val mirror: LibraryOutput
+        if (layoutRes != null) {
+            activity.setContentView(content)
+            val page = LandscapeLibraryView(activity, content, layoutRes, aspect, initialStereo)
+            window.setContentView(page)
+            mirror = page
+        } else {
+            // Arbitrary web pages cannot share a DOM between two WebViews. Keep the one
+            // interactive browser in a landscape preview on the upright phone.
+            val preview = object : FrameLayout(activity) {
+                override fun onMeasure(w: Int, h: Int) {
+                    val width = MeasureSpec.getSize(w); val height = MeasureSpec.getSize(h)
+                    val fitW = minOf(width, (height * aspect).roundToInt())
+                    content.layoutParams.apply { this.width = fitW; this.height = (fitW / aspect).roundToInt() }
+                    super.onMeasure(w, h)
+                }
+            }
+            preview.setBackgroundColor(activity.getColor(R.color.backdrop))
+            preview.addView(content, FrameLayout.LayoutParams(-1, -1, Gravity.CENTER))
+            activity.setContentView(preview)
+            val web = LibraryMirrorView(window.context, activity, content, aspect, initialStereo)
+            window.setContentView(web)
+            mirror = web
+        }
         content.onLongPressToggle = {
             mirror.stereo = !mirror.stereo
             prefs.edit().putBoolean(modeKey, mirror.stereo).apply()
@@ -63,11 +87,13 @@ internal object LibraryMirror {
     }
 }
 
+internal interface LibraryOutput { var stereo: Boolean }
+
 internal class LibraryMirrorView(
     context: Context, private val activity: Activity, private val source: View,
     private val eyeAspect: Float, stereo: Boolean
-) : View(context) {
-    var stereo = stereo
+) : View(context), LibraryOutput {
+    override var stereo = stereo
         set(value) { field = value; invalidate() }
     private val paint = Paint(Paint.FILTER_BITMAP_FLAG)
     private val destination = RectF()

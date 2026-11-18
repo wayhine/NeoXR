@@ -9,6 +9,7 @@ import android.os.Looper
 import android.view.Display
 import android.view.View
 import android.widget.EditText
+import android.widget.GridView
 import android.widget.ListView
 import android.widget.TextView
 import org.junit.Assert.*
@@ -27,6 +28,12 @@ import org.robolectric.shadows.ShadowDisplayManager
 @Config(sdk = [28])
 @LooperMode(LooperMode.Mode.PAUSED)
 class MainNetworkLibraryTest {
+    private fun layout(view: View, w: Int, h: Int) {
+        view.measure(View.MeasureSpec.makeMeasureSpec(w, View.MeasureSpec.EXACTLY),
+            View.MeasureSpec.makeMeasureSpec(h, View.MeasureSpec.EXACTLY))
+        view.layout(0, 0, w, h)
+    }
+
     private fun presentation(): Presentation = ShadowDialog.getShownDialogs()
         .filterIsInstance<Presentation>().last { it.isShowing }
 
@@ -53,6 +60,11 @@ class MainNetworkLibraryTest {
             val files = phone.findViewById<ListView>(R.id.fileList)
             fun tap(index: Int) = files.performItemClick(files.adapter.getView(index, null, files), index, index.toLong())
             tap(0)
+            files.viewTreeObserver.dispatchOnPreDraw()
+            val eyeFiles = window.findViewById<ListView>(R.id.fileList)!!
+            assertNotSame(files, eyeFiles)
+            assertSame(files.adapter, eyeFiles.adapter)
+            assertTrue(window.findViewById<View>(R.id.fileOverlay)!!.isShown)
             tap(1)
             val launched = shadowOf(phone).nextStartedActivity
             assertEquals(PlayerActivity::class.java.name, launched.component?.className)
@@ -80,12 +92,19 @@ class MainNetworkLibraryTest {
             shadowOf(Looper.getMainLooper()).idle()
             val window = presentation()
             val phone = home.get()
-            assertEquals(ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE, phone.requestedOrientation)
-            assertNull(window.findViewById<ListView>(R.id.sites))
-            val mirror = window.findViewById<android.view.ViewGroup>(android.R.id.content).getChildAt(0) as LibraryMirrorView
+            assertEquals(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, phone.requestedOrientation)
+            val mirror = window.findViewById<android.view.ViewGroup>(android.R.id.content).getChildAt(0) as LandscapeLibraryView
             assertTrue(mirror.stereo)
             val sites = phone.findViewById<ListView>(R.id.sites)
             val source = generateSequence(sites as View) { it.parent as? View }.filterIsInstance<SbsFrameLayout>().last()
+            layout(source, 420, 900)
+            source.viewTreeObserver.dispatchOnPreDraw()
+            layout(mirror, 3840, 1080)
+            val eyePage = mirror.getChildAt(0)
+            assertEquals(16f/9, eyePage.width.toFloat() / eyePage.height, 0.01f)
+            assertTrue(source.width < source.height)
+            assertNotSame(sites, mirror.findViewById<ListView>(R.id.sites))
+            assertSame(sites.adapter, mirror.findViewById<ListView>(R.id.sites).adapter)
             assertFalse(source.sbs)
             source.onLongPressToggle!!.invoke()
             assertFalse(mirror.stereo)
@@ -101,6 +120,14 @@ class MainNetworkLibraryTest {
             val networkSearch = network.findViewById<EditText>(R.id.librarySearch)
             assertNotSame(homeSearch, networkSearch)
             networkSearch.setText("missing")
+            source.viewTreeObserver.dispatchOnPreDraw()
+            assertEquals("missing", mirror.findViewById<EditText>(R.id.librarySearch).text.toString())
+            assertSame(network.findViewById<GridView>(R.id.libraryGrid).adapter,
+                mirror.findViewById<GridView>(R.id.libraryGrid).adapter)
+            network.findViewById<View>(R.id.librarySort).performClick()
+            source.viewTreeObserver.dispatchOnPreDraw()
+            assertTrue(mirror.findViewById<View>(R.id.librarySortPicker).isShown)
+            phone.onBackPressedDispatcher.onBackPressed()
             assertEquals("", homeSearch.text.toString())
             assertNull(shadowOf(home.get()).nextStartedActivity)
             home.saveInstanceState(state)
@@ -130,5 +157,57 @@ class MainNetworkLibraryTest {
             assertTrue(phone.findViewById<ListView>(R.id.sites).isShown)
             assertNull(shadowOf(restored.get()).nextStartedActivity)
         } finally { restored.pause().stop().destroy() }
+    }
+
+    @Test fun portraitGridScrollsTheWiderGlassesGridToTheSameMedia() {
+        connectGlasses()
+        val home = Robolectric.buildActivity(MainActivity::class.java).setup()
+        try {
+            shadowOf(Looper.getMainLooper()).idle()
+            val phone = home.get()
+            phone.findViewById<View>(R.id.btnLibrary).performClick()
+            val grid = phone.findViewById<GridView>(R.id.libraryGrid)
+            val root = generateSequence(grid as View) { it.parent as? View }.filterIsInstance<SbsFrameLayout>().first()
+            val eye = presentation().findViewById<android.view.ViewGroup>(android.R.id.content)!!.getChildAt(0) as LandscapeLibraryView
+            grid.adapter = object : android.widget.BaseAdapter() {
+                override fun getCount() = 200
+                override fun getItem(i: Int) = i
+                override fun getItemId(i: Int) = i.toLong()
+                override fun getView(i: Int, recycled: View?, parent: android.view.ViewGroup) =
+                    ((recycled as? TextView) ?: TextView(phone).apply { height = 100 }).apply { text = "Movie " + i }
+            }
+            layout(root, 420, 900)
+            root.viewTreeObserver.dispatchOnPreDraw()
+            layout(eye, 3840, 1080)
+            val eyeGrid = eye.findViewById<GridView>(R.id.libraryGrid)
+            assertTrue(eyeGrid.numColumns > grid.numColumns)
+            root.findViewById<LibraryScrollFrame>(R.id.libraryScroller).scrollPage(1800)
+            root.viewTreeObserver.dispatchOnPreDraw()
+            layout(eye, 3840, 1080)
+            val first = grid.firstVisiblePosition
+            assertTrue(first > 0)
+            assertTrue("Phone anchor $first outside glasses range " +
+                "${eyeGrid.firstVisiblePosition}..${eyeGrid.lastVisiblePosition}",
+                first in eyeGrid.firstVisiblePosition..eyeGrid.lastVisiblePosition)
+        } finally { home.pause().stop().destroy() }
+    }
+
+    @Test fun webPreviewKeepsOneLandscapeBrowserInsideThePortraitPhone() {
+        connectGlasses()
+        val controller = Robolectric.buildActivity(android.app.Activity::class.java).create().start()
+        try {
+            val activity = controller.get()
+            val browser = SbsFrameLayout(activity)
+            LibraryMirror.attach(activity, browser)
+            controller.resume().visible()
+            shadowOf(Looper.getMainLooper()).idle()
+            val phone = browser.parent as android.view.ViewGroup
+            layout(phone, 420, 900)
+            assertEquals(ActivityInfo.SCREEN_ORIENTATION_PORTRAIT, activity.requestedOrientation)
+            assertEquals(1, phone.childCount)
+            assertEquals(420, browser.width)
+            assertEquals(16f/9, browser.width.toFloat()/browser.height, 0.01f)
+            assertTrue(presentation().findViewById<android.view.ViewGroup>(android.R.id.content)!!.getChildAt(0) is LibraryMirrorView)
+        } finally { controller.pause().stop().destroy() }
     }
 }

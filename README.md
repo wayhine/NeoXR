@@ -1,8 +1,8 @@
 # NeoXR 双屏版 · Dual Library
 
-**双屏预览版 `1.8.0-dual.3`（versionCode `14`）**，桌面图标是橙底双屏播放键。从 `v1.7.0` 分出，应用 ID 为 `com.neoxr.player.dual`，可与 [NeoXR 社区版 1.7.0](https://github.com/wayhine/NeoXR/releases/tag/v1.7.0) 同时安装。两个版本的目录授权、网络账号、设置与播放记录独立；首次使用请在双屏版重新添加媒体来源。
+**双屏预览版 `1.8.0-dual.4`（versionCode `15`）**，桌面图标是橙底双屏播放键。从 `v1.7.0` 分出，应用 ID 为 `com.neoxr.player.dual`，可与 [NeoXR 社区版 1.7.0](https://github.com/wayhine/NeoXR/releases/tag/v1.7.0) 同时安装。两个版本的目录授权、网络账号、设置与播放记录独立；首次使用请在双屏版重新添加媒体来源。
 
-接上眼镜后，手机与眼镜显示同一张横屏媒体库。在手机上轻点选片、用一根手指滚动、输入文字搜索；进入播放后，眼镜显示视频，手机恢复原有的播放控制器。返回即继续选片。眼镜按单眼比例完整显示菜单，屏幕比例不同时会留黑边。全宽 3D 默认复制到左右眼；长按菜单空白处可单独切换眼镜菜单的显示模式。键盘、系统文件选择器和授权对话框在手机上操作。
+接上眼镜后，手机竖屏选片，眼镜按横屏宽度排列同一份媒体列表。目录、搜索和排序同步。在手机上轻点选片、用一根手指滚动、输入文字搜索；进入播放后，眼镜显示视频，手机恢复原有的播放控制器。返回即继续选片。网页浏览在竖屏手机内显示横向预览，眼镜显示同一网页；只运行一个浏览会话。全宽 3D 默认复制到左右眼；长按菜单空白处可单独切换眼镜菜单的显示模式。键盘、系统文件选择器和授权对话框在手机上操作。
 
 本项目由 [wayhine](https://github.com/wayhine) 维护，基于
 [NeoXR-app/NeoXR](https://github.com/NeoXR-app/NeoXR) 1.5 二次开发，
@@ -65,7 +65,7 @@ Playback starts in single-view. The output button can enable SBS for the glasses
 
 ## What it does
 
-- **Browse on both screens.** The phone owns the interactive landscape library. The glasses show the same page, fitted to each eye. Tap or scroll directly on the phone.
+- **Browse on both screens.** Browse in portrait on the phone; the glasses lay out the same library in landscape for each eye. Tap or scroll directly on the phone.
 - **Watch on the glasses.** The player renders video directly to the external display and puts playback controls on the phone.
 - **Head tracking.** The view can follow your head, using the motion sensor inside
   the glasses (see [Head tracking](#head-tracking) below).
@@ -119,7 +119,7 @@ The community release uses a separate app ID and can stay installed.
 ## Getting started
 
 1. Connect the glasses to your phone with a USB-C cable.
-2. Open **NeoXR 双屏版**. The same landscape library appears on the phone and in the glasses.
+2. Open **NeoXR 双屏版**. The phone shows a portrait library, while the glasses show the same page in landscape.
 3. Add a video source:
    - **A site feed** — select *Web / SMB*, type a site address and press Add (or Done
      on the keyboard). If the site serves a DeoVR JSON API feed, you get a video
