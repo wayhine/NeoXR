@@ -3,12 +3,15 @@ package com.neoxr.player
 import android.app.Activity
 import android.content.Context
 import android.text.format.Formatter
+import android.view.Gravity
 import android.view.View
 import android.view.ViewGroup
+import android.view.inputmethod.InputMethodManager
 import android.widget.BaseAdapter
 import android.widget.GridView
-import android.widget.ListView
 import android.widget.TextView
+import androidx.activity.ComponentActivity
+import androidx.activity.OnBackPressedCallback
 
 /** Shared view/sort controls and folder navigation for local, SMB and WebDAV indexes. */
 internal class LibraryPresentation(
@@ -25,7 +28,12 @@ internal class LibraryPresentation(
     private var folderView = prefs.getBoolean("folders", false)
     private var sort = LibrarySort.saved(prefs.getString("sort", null))
     private var descending = prefs.getBoolean("descending", false)
-    private var sortOpen = false
+    private val picker = wrap.findViewById<View>(R.id.librarySortPicker)
+    private val page = wrap.findViewById<LibraryScrollFrame>(R.id.libraryScroller)
+    private val sortButton = wrap.findViewById<TextView>(R.id.librarySort)
+    private val pickerBack = object : OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() { closeMenus() }
+    }
     private var preparing = false
     private var active = true
     private var scope = emptyList<LibraryVideo>()
@@ -39,38 +47,50 @@ internal class LibraryPresentation(
         grid.adapter = cards
         grid.setOnItemClickListener { _, _, position, _ ->
             val card = cards.items[position]
-            if (card.directory) { sortOpen = false; onNavigate(card.root, card.path) } else onPlay(card.video!!)
+            if (card.directory) onNavigate(card.root, card.path) else onPlay(card.video!!)
         }
         wrap.findViewById<View>(R.id.libraryFilesView).setOnClickListener { changeView(false) }
         wrap.findViewById<View>(R.id.libraryFolderView).setOnClickListener { changeView(true) }
-        wrap.findViewById<View>(R.id.librarySort).setOnClickListener {
-            onInteract(); sortOpen = !sortOpen; onRender()
-        }
         wrap.findViewById<View>(R.id.libraryUp).setOnClickListener {
-            sortOpen = false
             if (selected != null) onNavigate(if (path.isEmpty()) null else selected, path.substringBeforeLast('/', ""))
         }
         val choices = LibrarySort.entries.flatMap { key -> listOf(key to false, key to true) }
-        val menu = wrap.findViewById<ListView>(R.id.librarySortMenu)
+        val menu = picker.findViewById<GridView>(R.id.librarySortMenu)
+        (activity as? ComponentActivity)?.let { it.onBackPressedDispatcher.addCallback(it, pickerBack) }
+        sortButton.setOnClickListener {
+            onInteract(); onRender(); page.stopScroll()
+            activity.getSystemService(InputMethodManager::class.java)?.hideSoftInputFromWindow(sortButton.windowToken, 0)
+            picker.visibility = View.VISIBLE
+            page.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS
+            picker.requestFocus(); pickerBack.isEnabled = true
+            menu.invalidateViews()
+            menu.setSelection(choices.indexOf(sort to descending))
+        }
+        picker.findViewById<View>(R.id.librarySortCancel).setOnClickListener { closeMenus() }
         menu.adapter = object : BaseAdapter() {
             override fun getCount() = choices.size
             override fun getItem(position: Int) = choices[position]
             override fun getItemId(position: Int) = position.toLong()
             override fun getView(position: Int, convert: View?, parent: ViewGroup): View {
                 val (key, down) = choices[position]
-                return ((convert as? TextView) ?: TextView(activity).apply {
-                    textSize = 12f
+                return ((convert as? TextView) ?: TextView(parent.context).apply {
+                    textSize = 14f
+                    includeFontPadding = false
+                    gravity = Gravity.CENTER_VERTICAL
                     setTextColor(activity.getColor(R.color.on_surface))
-                    val pad = (14 * resources.displayMetrics.density).toInt()
-                    setPadding(pad, pad, pad, pad)
+                    val d = resources.displayMetrics.density
+                    minHeight = (48 * d).toInt()
+                    setPadding((12 * d).toInt(), 0, (12 * d).toInt(), 0)
                 }).apply {
-                    text = "${if (key == sort && down == descending) "● " else "○ "}${key.label} · ${if (down) "降序 ↓" else "升序 ↑"}"
+                    val current = key == sort && down == descending
+                    setBackgroundResource(if (current) R.drawable.bg_row_active else R.drawable.bg_input)
+                    text = "${if (current) "● " else "○ "}${key.label} · ${if (down) "降序 ↓" else "升序 ↑"}"
                 }
             }
         }
         menu.setOnItemClickListener { _, _, position, _ ->
             val option = choices[position]
-            sort = option.first; descending = option.second; sortOpen = false
+            sort = option.first; descending = option.second; closeMenus()
             save(); onRender(); grid.setSelection(0)
         }
         metadata.onMetadataChanged = {
@@ -82,12 +102,19 @@ internal class LibraryPresentation(
     }
 
     private fun changeView(folders: Boolean) {
-        onInteract(); folderView = folders; sortOpen = false
+        onInteract(); folderView = folders
         save(); onRender(); grid.setSelection(0)
     }
     private fun save() = prefs.edit().putBoolean("folders", folderView)
         .putString("sort", sort.name).putBoolean("descending", descending).apply()
-    fun closeMenus(): Boolean { val open = sortOpen; sortOpen = false; return open }
+    fun closeMenus(): Boolean {
+        if (picker.visibility != View.VISIBLE) return false
+        picker.visibility = View.GONE
+        pickerBack.isEnabled = false
+        page.importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+        if (!sortButton.isInTouchMode) sortButton.requestFocus()
+        return true
+    }
 
     fun render(folders: List<LibraryFolder>, root: String?, directory: String, query: String): Int {
         selected = root; path = directory
@@ -101,8 +128,7 @@ internal class LibraryPresentation(
         listOf(R.id.libraryFilesView to !folderView, R.id.libraryFolderView to folderView).forEach { (id, active) ->
             wrap.findViewById<View>(id).setBackgroundResource(if (active) R.drawable.bg_row_active else R.drawable.bg_input)
         }
-        wrap.findViewById<TextView>(R.id.librarySort).text = "${sort.label} ${if (descending) "↓" else "↑"} ▾"
-        wrap.findViewById<View>(R.id.librarySortMenu).visibility = if (sortOpen) View.VISIBLE else View.GONE
+        sortButton.text = "${sort.label} ${if (descending) "↓" else "↑"} ▾"
         wrap.findViewById<View>(R.id.libraryLocationRow).visibility = if (root != null) View.VISIBLE else View.GONE
         wrap.findViewById<TextView>(R.id.libraryLocation).apply {
             text = (folders.find { it.uri == root }?.name ?: "媒体库") + if (directory.isEmpty()) "" else "/$directory"
@@ -126,7 +152,7 @@ internal class LibraryPresentation(
         }
     }
 
-    fun close() { metadata.onMetadataChanged = null; metadata.cancelDurationWarmup() }
+    fun close() { pickerBack.remove(); metadata.onMetadataChanged = null; metadata.cancelDurationWarmup() }
     fun resume() { active = true }
     fun suspend() { active = false; metadata.cancelDurationWarmup() }
 

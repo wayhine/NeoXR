@@ -56,6 +56,8 @@
 
     </com.neoxr.player.LibraryScrollFrame>
 
+    <include layout="@layout/library_sort_picker" />
+
     <LinearLayout
         android:id="@+id/networkBrowser"
         android:layout_width="match_parent"

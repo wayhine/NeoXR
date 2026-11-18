@@ -138,7 +138,7 @@ class LibraryScrollFrame @JvmOverloads constructor(context: Context, attrs: Attr
                 lastY = downY
                 dragging = false
                 pageGesture = activeList() != null &&
-                    !listOf(R.id.librarySortMenu, R.id.libraryFolders, R.id.libraryManager).any { inPanel(it, downX, downY) }
+                    !listOf(R.id.libraryFolders, R.id.libraryManager).any { inPanel(it, downX, downY) }
                 velocity?.recycle()
                 velocity = VelocityTracker.obtain().apply { addMovement(event) }
             }

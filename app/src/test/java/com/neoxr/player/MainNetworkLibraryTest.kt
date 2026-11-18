@@ -116,6 +116,11 @@ class MainNetworkLibraryTest {
             val network = generateSequence(title as View) { it.parent as? View }
                 .filterIsInstance<SbsFrameLayout>().first()
             assertEquals("missing", network.findViewById<EditText>(R.id.librarySearch).text.toString())
+            network.findViewById<View>(R.id.librarySort).performClick()
+            assertTrue(network.findViewById<View>(R.id.librarySortPicker).isShown)
+            phone.onBackPressedDispatcher.onBackPressed()
+            assertFalse(network.findViewById<View>(R.id.librarySortPicker).isShown)
+            assertEquals("missing", network.findViewById<EditText>(R.id.librarySearch).text.toString())
             restored.get().onBackPressedDispatcher.onBackPressed()
             assertEquals("", network.findViewById<EditText>(R.id.librarySearch).text.toString())
             restored.get().onBackPressedDispatcher.onBackPressed()

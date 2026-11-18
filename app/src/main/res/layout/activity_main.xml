@@ -207,6 +207,8 @@
 
     </com.neoxr.player.LibraryScrollFrame>
 
+    <include layout="@layout/library_sort_picker" />
+
     <!-- in-layout help: readable in every mode (plain / SBS split / on the glasses)
          — a dialog would be a separate window, invisible in stereo -->
     <FrameLayout

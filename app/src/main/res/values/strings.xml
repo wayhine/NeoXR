@@ -4,6 +4,7 @@
     <string name="view_files">视频视图</string>
     <string name="view_folders">文件夹视图</string>
     <string name="library_sort">排序 ▾</string>
+    <string name="library_sort_title">排序方式</string>
     <string name="library_up">上一级</string>
     <string name="orientation">横竖屏</string>
     <string name="orientation_description">点击切换横竖屏</string>

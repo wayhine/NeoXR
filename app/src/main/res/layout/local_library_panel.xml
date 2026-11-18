@@ -127,10 +127,6 @@
             android:stretchMode="columnWidth"
             android:verticalSpacing="14dp" />
 
-        <ListView android:id="@+id/librarySortMenu" android:layout_width="match_parent"
-            android:layout_height="match_parent" android:background="@drawable/bg_input"
-            android:divider="@null" android:scrollbars="none" android:visibility="gone" />
-
         <ListView
             android:id="@+id/libraryFolders"
             android:layout_width="match_parent"
