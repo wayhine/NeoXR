@@ -31,7 +31,7 @@ class MainActivity : AppCompatActivity() {
         // NO manual wrapping inside sentences — the TextView wraps to its own width,
         // and hand-inserted breaks produce ragged lines at the glasses' width.
         val HELP = """
-            NEOXR 社区二开版使用指南
+            NeoXR 双屏版使用指南
 
             版权与开源说明
             本版本由 wayhine 维护，基于 NeoXR-app/NeoXR 二次开发，非上游官方发行版。本次修改日期：2026-11-17。
@@ -55,8 +55,8 @@ class MainActivity : AppCompatActivity() {
             网页播放视频后，点击“VR播放”交给播放器。箭头控制网页前进、后退。“视图”可切换手机、Quest 3 或电脑版页面；百分比按钮调整页面缩放。网页自身是否支持登录、播放由网站决定。
 
             眼镜与手机控制器
-            连接 USB-C 眼镜后，画面显示在眼镜上，手机成为控制器。菜单中滑动移动指针、轻点选择、双指滚动。媒体库的顶部栏目与内容作为整页上下滚动，双指在触控板上滑浏览下方内容、下滑返回顶部。输入框会在手机上弹出编辑窗口。下次打开首页会恢复上次选择的“本地”或“网站 / 网络”。
-            未连接眼镜时，长按菜单可切换菜单双屏显示；这与播放器中的长按倍速是不同的操作。多屏设备可用“屏幕”按钮切换输出。
+            接上眼镜，手机会横屏显示媒体库，眼镜同步显示同一页。在手机上直接轻点选片、单指滑动浏览、输入文字搜索。系统文件选择器、键盘和授权提示请看手机。进入视频后，眼镜播放，手机切换为播放控制器；退出视频即可继续双屏选片。
+            眼镜显示两份或左右各缺一半时，可长按菜单空白处切换眼镜的单画面／SBS，手机保持单画面。未连接眼镜时，长按仍切换手机菜单的双屏显示。再次打开首页会恢复上次选择的“本地”或“网站 / 网络”。
 
             播放器手势与倍速
             轻点视频显示或隐藏控制栏；“播放 / 暂停”按钮控制播放状态。顶部的横竖屏切换按钮、手势、回正与关闭并排显示。
@@ -416,8 +416,6 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         onBackPressedDispatcher.addCallback(this, networkBack)
-        // findViewById via wrap: with glasses attached the content lives on THEM,
-        // not in the activity's content view (which is then the touchpad controller)
         val wrap = SbsFrameLayout.attach(this, R.layout.activity_main)
         // version in the header so a stale APK is visible at a glance
         wrap.findViewById<TextView>(R.id.subtitle).append(
@@ -545,8 +543,6 @@ class MainActivity : AppCompatActivity() {
             setBackgroundColor(getColor(R.color.backdrop))
             layoutInflater.inflate(R.layout.activity_network_library, this, true)
         }
-        // Keep the existing Presentation and its pointer. Only the content changes,
-        // so Android never exposes a mirrored phone window during this navigation.
         wrap.getChildAt(0).visibility = View.GONE
         wrap.addView(content, 1, android.widget.FrameLayout.LayoutParams(-1, -1))
         networkWrap = content

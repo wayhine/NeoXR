@@ -12,8 +12,7 @@ class NetworkLibraryActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         val url = intent.getStringExtra("url")
         if (url == null || !NetworkMedia.isNetwork(url)) { finish(); return }
-        val wrap = SbsFrameLayout.attach(this, R.layout.activity_network_library,
-            listOf(GlassesOut.stripButton(this, "✕") { finish() }))
+        val wrap = SbsFrameLayout.attach(this, R.layout.activity_network_library)
         screen = NetworkLibraryScreen(this, wrap, url, savedInstanceState,
             intent.getBooleanExtra("browse", false)) { finish() }
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

@@ -13,7 +13,7 @@
 
     <application
         android:icon="@mipmap/ic_launcher"
-        android:label="NeoXR 社区版"
+        android:label="@string/app_name"
         android:usesCleartextTraffic="true"
         android:theme="@style/Theme.NeoXR">
 

@@ -1,6 +1,8 @@
-# NeoXR Community Fork / NeoXR 社区二开版
+# NeoXR 双屏版 · Dual Library
 
-**当前版本：`1.7.0`（versionCode `11`），更新日期：2026-11-18。**
+**双屏预览版 `1.8.0-dual.1`（versionCode `12`）**，从 `v1.7.0` 分出。应用 ID 为 `com.neoxr.player.dual`，可与 [NeoXR 社区版 1.7.0](https://github.com/wayhine/NeoXR/releases/tag/v1.7.0) 同时安装。两个版本的目录授权、网络账号、设置与播放记录独立；首次使用请在双屏版重新添加媒体来源。
+
+接上眼镜后，手机与眼镜显示同一张横屏媒体库。在手机上轻点选片、用一根手指滚动、输入文字搜索；进入播放后，眼镜显示视频，手机恢复原有的播放控制器。返回即继续选片。眼镜按单眼比例完整显示菜单，屏幕比例不同时会留黑边。全宽 3D 默认复制到左右眼；长按菜单空白处可单独切换眼镜菜单的显示模式。键盘、系统文件选择器和授权对话框在手机上操作。
 
 本项目由 [wayhine](https://github.com/wayhine) 维护，基于
 [NeoXR-app/NeoXR](https://github.com/NeoXR-app/NeoXR) 1.5 二次开发，
@@ -63,12 +65,8 @@ Playback starts in single-view. The output button can enable SBS for the glasses
 
 ## What it does
 
-- **Plays on the glasses, not on the phone.** The glasses are a real external
-  display over USB-C, so NeoXR renders straight to them. Nothing is mirrored and
-  nothing is rescaled.
-- **The phone is the remote.** A large touchpad moves a pointer on the glasses:
-  tap to click, two fingers to scroll. The screens you need are in the glasses, the
-  buttons are under your thumb.
+- **Browse on both screens.** The phone owns the interactive landscape library. The glasses show the same page, fitted to each eye. Tap or scroll directly on the phone.
+- **Watch on the glasses.** The player renders video directly to the external display and puts playback controls on the phone.
 - **Head tracking.** The view can follow your head, using the motion sensor inside
   the glasses (see [Head tracking](#head-tracking) below).
 - **Any format, detected automatically.** Screen shape (flat, wide, 180°, 360°) and
@@ -111,18 +109,17 @@ Playback starts in single-view. The output button can enable SBS for the glasses
 
 ## Install
 
-1. Download the latest `NeoXR.apk` from [Releases](../../releases/latest).
+1. Build this branch to obtain `NeoXR-Dual.apk` (see the build instructions below).
 2. Open the file on your phone and allow the install.
 3. Android warns you about installing from an unknown source. That is normal for
    apps distributed outside Google Play.
 
-To get updates automatically, use [Obtainium](https://github.com/ImranR98/Obtainium):
-add this repository URL and it will follow new releases.
+The community release uses a separate app ID and can stay installed.
 
 ## Getting started
 
 1. Connect the glasses to your phone with a USB-C cable.
-2. Open NeoXR. The menu appears in the glasses; the phone shows the touchpad.
+2. Open **NeoXR 双屏版**. The same landscape library appears on the phone and in the glasses.
 3. Add a video source:
    - **A site feed** — select *Web / SMB*, type a site address and press Add (or Done
      on the keyboard). If the site serves a DeoVR JSON API feed, you get a video
@@ -154,9 +151,9 @@ In the menu, the video list and the browser:
 
 | Action | Result |
 |---|---|
-| Drag on the touchpad | Move the pointer |
-| Tap | Click |
-| Two fingers | Scroll |
+| Tap a file on the phone | Play it on the glasses |
+| Swipe with one finger | Scroll both libraries together |
+| Long press empty space (with glasses) | Switch glasses menu between mono and SBS |
 | Long press (without glasses) | Turn the split SBS view on or off |
 
 In the player:
@@ -271,7 +268,7 @@ profile settings).
 git clone https://github.com/wayhine/NeoXR.git
 cd NeoXR
 ./gradlew assembleDebug
-# APK: app/build/outputs/apk/debug/NeoXR.apk
+# APK: app/build/outputs/apk/debug/NeoXR-Dual.apk
 ```
 
 You need JDK 17 and the Android SDK (compileSdk 35). Release builds are signed with

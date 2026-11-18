@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
+    <string name="app_name">NeoXR 双屏版</string>
     <string name="view_files">视频视图</string>
     <string name="view_folders">文件夹视图</string>
     <string name="library_sort">排序 ▾</string>

@@ -27,10 +27,6 @@ import android.widget.Toast
  * Android WebView, so in-page "enter VR" flows cannot complete regardless of the UA
  * claimed; the sniffer is the only route to stereo playback here.
  *
- * With glasses connected the page renders on THEM (GlassesOut) and the phone acts as
- * a touchpad controller: on-page overlay buttons are hidden (a cursor reaches them
- * poorly and they clutter the page) — Play VR / View / close move to the controller
- * strip instead.
  */
 class WebViewActivity : Activity() {
 
@@ -81,8 +77,6 @@ class WebViewActivity : Activity() {
     private lateinit var btnZoom: TextView
     private lateinit var leftBar: LinearLayout
     private lateinit var rightBar: LinearLayout
-    private var ctrlVr: TextView? = null // controller-strip twin of btnVr (glasses mode)
-    private var glassesOut: GlassesOut? = null
     private var zoom = 50
     private val prefs by lazy { getSharedPreferences("neoxr", Context.MODE_PRIVATE) }
     // Quest 3 by default: VR sites serve their headset layout to it. Deliberately not
@@ -157,7 +151,6 @@ class WebViewActivity : Activity() {
                         ) stream = u
                         runOnUiThread {
                             btnVr.visibility = View.VISIBLE
-                            ctrlVr?.visibility = View.VISIBLE
                         }
                     }
                     return null // sniff only, let the WebView load it
@@ -176,11 +169,7 @@ class WebViewActivity : Activity() {
             }
             webChromeClient = object : WebChromeClient() {
                 override fun onShowCustomView(view: View, callback: CustomViewCallback) {
-                    // glasses mode: the root lives on the presentation, so swapping the
-                    // ACTIVITY content would crash on restore ("view already has a
-                    // parent"); in-page fullscreen is pointless there anyway — stereo
-                    // playback goes through ▶ VR
-                    if (glassesOut != null) {
+                    if (Glasses.find(this@WebViewActivity) != null) {
                         callback.onCustomViewHidden()
                         return
                     }
@@ -189,54 +178,15 @@ class WebViewActivity : Activity() {
                 }
 
                 override fun onHideCustomView() {
-                    if (glassesOut != null) return
+                    if (rootView().parent != null) return
                     setContentView(rootView())
                     fullscreenOverCutout()
                 }
             }
         }
-        val glasses = Glasses.find(this)
-        if (glasses != null) {
-            // with glasses attached the page lives on THEM at native resolution and the
-            // phone becomes a touchpad controller with a cursor. The on-page overlay
-            // buttons are dead weight there — hide them and move their jobs to the
-            // controller strip.
-            val out = GlassesOut(this, glasses, rootView()) {
-                glassesOut = null
-                leftBar.visibility = View.VISIBLE
-                rightBar.visibility = View.VISIBLE
-                setContentView(rootView())
-            }
-            glassesOut = out
-            leftBar.visibility = View.GONE
-            rightBar.visibility = View.GONE
-            ctrlVr = GlassesOut.stripButton(this, "▶ VR播放") {
-                stream?.let {
-                    startActivity(Intent(this, PlayerActivity::class.java).putExtra("stream", it))
-                }
-            }.apply {
-                visibility = View.GONE
-                // the call to action on this screen — the one azure text in the grid
-                setTextColor(getColor(R.color.primary))
-            }
-            // label is the mode alone — "View: Quest 3" overflows a uniform grid cell
-            val ctrlView = GlassesOut.stripButton(this, UA_NAMES[uaIndex]) {}
-            ctrlView.setOnClickListener {
-                cycleUa()
-                ctrlView.text = UA_NAMES[uaIndex]
-            }
-            // ✕ first: the strip scrolls sideways and the close button must never be
-            // the one pushed off the phone screen
-            setContentView(GlassesOut.controller(this, out, listOf(
-                GlassesOut.stripButton(this, "✕") { finish() },
-                ctrlVr!!, ctrlView,
-                GlassesOut.stripButton(this, "−") { stepZoom(-1) }, // page scale
-                GlassesOut.stripButton(this, "+") { stepZoom(+1) }
-            )))
-        } else {
-            setContentView(rootView())
-        }
-        web.loadUrl(intent.getStringExtra("url")!!)
+        LibraryMirror.attach(this, rootView())
+        if (savedInstanceState == null || web.restoreState(savedInstanceState) == null)
+            web.loadUrl(intent.getStringExtra("url")!!)
     }
 
     private var root: SbsFrameLayout? = null
@@ -308,11 +258,6 @@ class WebViewActivity : Activity() {
         leftBar.addOnLayoutChangeListener(arrangeBars)
         rightBar.addOnLayoutChangeListener(arrangeBars)
 
-        frame.sbs = prefs.getBoolean("menuSbs", false)
-        frame.onLongPressToggle = {
-            frame.sbs = !frame.sbs
-            prefs.edit().putBoolean("menuSbs", frame.sbs).apply()
-        }
         updateNav()
     }
 
@@ -345,11 +290,6 @@ class WebViewActivity : Activity() {
     private fun cycleZoom() =
         setZoomPct(ZOOMS[(ZOOMS.indexOf(zoom).takeIf { it >= 0 }?.plus(1) ?: 0) % ZOOMS.size])
 
-    private fun stepZoom(dir: Int) {
-        val i = (ZOOMS.indexOf(zoom).takeIf { it >= 0 } ?: 1) + dir
-        setZoomPct(ZOOMS[i.coerceIn(0, ZOOMS.size - 1)])
-    }
-
     private fun updateNav() {
         btnBack.alpha = if (web.canGoBack()) 1f else 0.35f
         btnFwd.alpha = if (web.canGoForward()) 1f else 0.35f
@@ -376,6 +316,11 @@ class WebViewActivity : Activity() {
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
         if (web.canGoBack()) web.goBack() else @Suppress("DEPRECATION") super.onBackPressed()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        web.saveState(outState)
     }
 
     override fun onDestroy() {

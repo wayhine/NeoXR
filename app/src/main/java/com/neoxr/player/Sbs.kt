@@ -4,10 +4,8 @@ import android.app.Activity
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Matrix
-import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.SystemClock
-import android.view.Display
 import android.view.GestureDetector
 import android.view.Gravity
 import android.view.MotionEvent
@@ -203,51 +201,9 @@ class SbsFrameLayout(context: Context) : FrameLayout(context) {
     }
 
     companion object {
-        /**
-         * Sets [layoutRes] as the activity content wrapped in an [SbsFrameLayout].
-         * Without glasses it goes to the phone screen (long press toggles menu SBS).
-         * With glasses plugged in (USB-C external display) the content goes to THEM
-         * at native resolution and the phone shows only a touchpad controller.
-         * Callers must findViewById through the returned wrap, not the activity.
-         * [controllerExtras] are appended to the phone controller strip in glasses
-         * mode (ignored otherwise).
-         */
-        fun attach(
-            activity: Activity, layoutRes: Int, controllerExtras: List<View> = emptyList()
-        ): SbsFrameLayout {
-            activity.fullscreenOverCutout()
-            val prefs = activity.getSharedPreferences("neoxr", Context.MODE_PRIVATE)
-            val wrap = SbsFrameLayout(activity)
-            activity.layoutInflater.inflate(layoutRes, wrap, true)
-            wrap.sbs = prefs.getBoolean("menuSbs", false)
-            val glasses = Glasses.find(activity)
-            fun showOnPhone(failedDisplay: Display? = null) {
-                // no glasses, or the display refused the presentation (a stale
-                // display entry, or one the app may not draw on): keep everything
-                // on the phone rather than crashing
-                wrap.onLongPressToggle = {
-                    wrap.sbs = !wrap.sbs
-                    prefs.edit().putBoolean("menuSbs", wrap.sbs).apply()
-                }
-                activity.setContentView(wrap)
-                watchForGlasses(activity, failedDisplay)
-            }
-            val out = glasses?.let { display -> GlassesOut(activity, display, wrap) { showOnPhone(display) } }
-            if (out != null) activity.setContentView(GlassesOut.controller(activity, out, controllerExtras))
-            else showOnPhone()
-            return wrap
-        }
-
-        /** Recreates the activity when glasses get plugged in, moving content to them. */
-        private fun watchForGlasses(activity: Activity, initial: Display? = null) {
-            // A failed presentation falls back after onResume, so its watcher is already active.
-            val watcher = GlassesWatcher(activity, initial, initiallyResumed = initial != null) { activity.recreate() }
-            activity.window.decorView.addOnAttachStateChangeListener(
-                object : View.OnAttachStateChangeListener {
-                    override fun onViewAttachedToWindow(v: View) {}
-                    override fun onViewDetachedFromWindow(v: View) =
-                        watcher.close()
-                })
+        fun attach(activity: Activity, layoutRes: Int): SbsFrameLayout = SbsFrameLayout(activity).also {
+            activity.layoutInflater.inflate(layoutRes, it, true)
+            LibraryMirror.attach(activity, it)
         }
     }
 }

@@ -56,12 +56,7 @@ class VideoListActivity : AppCompatActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        // findViewById via wrap: with glasses attached the content lives on THEM;
-        // the controller strip gets a close button (in-content ✕ works too, via cursor)
-        val wrap = SbsFrameLayout.attach(
-            this, R.layout.activity_videos,
-            listOf(GlassesOut.stripButton(this, "✕") { finish() })
-        )
+        val wrap = SbsFrameLayout.attach(this, R.layout.activity_videos)
         val url = intent.getStringExtra("url")!!
 
         wrap.findViewById<TextView>(R.id.siteTitle).text = try {

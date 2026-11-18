@@ -17,11 +17,11 @@ android {
     compileSdk 35
 
     defaultConfig {
-        applicationId "com.neoxr.player"
+        applicationId "com.neoxr.player.dual"
         minSdk 26
         targetSdk 34
-        versionCode 11
-        versionName "1.7.0"
+        versionCode 12
+        versionName "1.8.0-dual.1"
 
         // the FFmpeg decoders ship a native lib per ABI; phones that can drive
         // glasses over USB-C DisplayPort are all arm64, so the rest is dead weight
@@ -63,7 +63,7 @@ android {
     // sideloaded by hand — a recognizable file name beats "app-debug.apk"
     applicationVariants.all { variant ->
         variant.outputs.all {
-            outputFileName = "NeoXR.apk"
+            outputFileName = "NeoXR-Dual.apk"
         }
     }
 }
