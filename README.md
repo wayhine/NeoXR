@@ -1,6 +1,6 @@
 # NeoXR Community Fork / NeoXR 社区二开版
 
-**当前版本：`1.7.0`（versionCode `11`），更新日期：2026-11-18。**
+**当前版本：`1.7.1`（versionCode `12`），更新日期：2026-11-18。**
 
 本项目由 [wayhine](https://github.com/wayhine) 维护，基于
 [NeoXR-app/NeoXR](https://github.com/NeoXR-app/NeoXR) 1.5 二次开发，
